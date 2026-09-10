@@ -400,8 +400,12 @@ struct Root: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
             // 折叠态贴着刘海，只圆下面两角；展开态是独立浮层，四角全圆
+            // 展开态上沿紧贴刘海下沿，所以顶部两角只给很小的圆角 ——
+            // 全圆角会在接缝处露出缺口，看着像两块独立的东西。
             let shape = AnyInsettableShape(expanded
-                ? AnyInsettableShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                ? AnyInsettableShape(UnevenRoundedRectangle(
+                    topLeadingRadius: 6, bottomLeadingRadius: 22,
+                    bottomTrailingRadius: 22, topTrailingRadius: 6, style: .continuous))
                 : AnyInsettableShape(UnevenRoundedRectangle(
                     bottomLeadingRadius: 13, bottomTrailingRadius: 13, style: .continuous)))
             GlassPanel(shape: shape, expanded: expanded)
@@ -580,11 +584,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func place(_ size: NSSize, animated: Bool) {
         let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
         let n = Notch(screen: screen)
-        // 折叠态：上沿与屏幕顶端齐平，刘海两侧露出的部分看起来就是刘海变宽了。
-        // 展开态：脱离刘海往下挪 8pt，做成独立浮层（四角全圆），
-        //         这样内容不会被物理刘海遮住。
+        // 两种状态都贴着屏幕顶端：折叠态与刘海齐平（两侧露出的部分看起来就是
+        // 刘海变宽了）；展开态上沿正好接在刘海下沿，看起来是从刘海里长出来的，
+        // 而不是底下悬着一块。之前留了 8pt 间隙，视觉上就断开了。
         let isExpanded = size.height > n.height + 40
-        let top = isExpanded ? screen.frame.maxY - n.height - 8 : screen.frame.maxY
+        let top = isExpanded ? screen.frame.maxY - n.height : screen.frame.maxY
         let frame = NSRect(x: (n.centerX - size.width / 2).rounded(),
                            y: (top - size.height).rounded(),
                            width: size.width, height: size.height)
