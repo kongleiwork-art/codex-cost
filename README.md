@@ -38,15 +38,28 @@ xcode-select --install
 
 The app is currently unsigned. On first launch, right-click CodexCost.app, choose **Open**, then confirm **Open** again.
 
-To force menu-bar mode:
+Command-line flags:
 
 ~~~bash
-open CodexCost.app --args --menubar
+open CodexCost.app --args --menubar     # force menu-bar mode
+open CodexCost.app --args --expanded    # start with the panel open
+./codex-cost --render panel.png         # render the panel offscreen to a PNG
+./codex-cost --lang en                  # override the system language
+./codex-cost --dump                     # print the numbers to stdout
 ~~~
 
 ---
 
 ## What it shows
+
+<img src="docs/panel-en.png" width="372" alt="The expanded panel: token breakdown, both quota windows, per-model spend, and the same workload priced on every other model">
+
+The last section is the one that took the most work to earn. Those same tokens
+would have cost 0% on Luna and about 8% on Sol — against the 35% they actually
+cost on Astra.
+
+The screenshots here are produced by `--render`, so they can be regenerated from
+real data instead of hand-captured.
 
 When collapsed, CodexCost stays out of the way beside the notch and shows the current model and quota usage.
 

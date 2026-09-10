@@ -46,12 +46,23 @@ xcode-select --install
 如果想强制使用菜单栏模式：
 
 ~~~bash
-open CodexCost.app --args --menubar
+open CodexCost.app --args --menubar     # 强制菜单栏模式
+open CodexCost.app --args --expanded    # 启动即展开
+./codex-cost --render panel.png         # 离屏渲染面板到 PNG
+./codex-cost --lang zh                  # 强制语言，不跟随系统
+./codex-cost --dump                     # 把数字打到标准输出
 ~~~
 
 ---
 
 ## 它能看到什么
+
+<img src="docs/panel-zh.png" width="372" alt="展开面板：token 拆解、两个额度窗口、各模型消耗，以及同样的工作量换成其它模型的价格">
+
+最下面那一块是最费劲才拿到的：同样这些 token，在 Luna 上是 0%、在 Sol 上约 8%
+—— 而在 Astra 上实际花掉了 35%。
+
+这里的截图是 `--render` 生成的，可以随时用真实数据重新出图，不用手动截屏。
 
 收起时，它只在刘海旁边显示当前模型和额度水位，不怎么占地方。
 
