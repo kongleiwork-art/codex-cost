@@ -1,190 +1,168 @@
+<div align="center">
+
 # codex-cost
 
-A small macOS tool for answering a question I kept running into:
+**Codex quota in your Mac's notch — and what your tokens would have cost on another model.**
 
-> **What is actually eating my Codex quota?**
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple&logoColor=white)](#install)
+[![Swift](https://img.shields.io/badge/Swift-native%2C%20no%20deps-orange?logo=swift&logoColor=white)](Sources/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Local only](https://img.shields.io/badge/data-never%20leaves%20your%20Mac-green)](#privacy)
 
-Codex already tells you how much of your 5-hour and weekly limits you have used.  
-codex-cost tries to explain **why** that number moved.
-
-It reads your local Codex session data, breaks usage down into new input, output/reasoning, and per-request overhead, then estimates how the same workload would compare across models.
-
-It lives beside the MacBook notch, or in the menu bar if your Mac does not have one.
-
-- Native Swift
-- No dependencies
-- No account setup
-- No telemetry
-- Nothing leaves your Mac
+<img src="docs/panel-en.png" width="380" alt="The expanded panel: token breakdown, both quota windows, per-model spend, and the same workload priced on every model">
 
 [中文说明](README.zh-CN.md)
 
+</div>
+
 ---
+
+Every Codex usage tracker answers *how much have I used*. This one answers the
+two questions that actually change what you do next:
+
+- **What is that spend made of** — new input, output, or the per-request floor?
+- **What would the same work have cost on a different model?**
+
+The second one needs a cost model. Getting one took **421 controlled API calls
+across 23 experiment cells**, changing one variable at a time. The raw trials and
+the harness are in [`research/`](research/).
 
 ## Install
 
-~~~bash
+```bash
 git clone https://github.com/kongleiwork-art/codex-cost
-cd codex-cost
-./build.sh
-open CodexCost.app
-~~~
+cd codex-cost && ./build.sh && open CodexCost.app
+```
 
-You only need the Xcode Command Line Tools:
+Needs Xcode Command Line Tools (`xcode-select --install`). Nothing else — no
+package manager, no account, no API key.
 
-~~~bash
-xcode-select --install
-~~~
+> The app is unsigned. On first launch: **right-click → Open → Open**.
 
-The app is currently unsigned. On first launch, right-click CodexCost.app, choose **Open**, then confirm **Open** again.
+## Features
 
-Command-line flags:
+|  |  |
+|---|---|
+| **Cost breakdown** | New input vs. output vs. per-request floor — see which one is actually draining you |
+| **Counterfactual pricing** | The same tokens, priced on every model you could have used |
+| **Both quota windows** | 5-hour and weekly, with reset countdowns |
+| **Threshold alerts** | Notifies at 80% and 95% with burn rate, time left, and a cheaper model when one would help |
+| **Menu-bar fallback** | Works on Macs without a notch |
+| **Bilingual** | English / 中文, follows system language |
 
-~~~bash
-open CodexCost.app --args --menubar     # force menu-bar mode
-open CodexCost.app --args --expanded    # start with the panel open
-./codex-cost --render panel.png         # render the panel offscreen to a PNG
-./codex-cost --lang en                  # override the system language
-./codex-cost --dump                     # print the numbers to stdout
-~~~
+## What the measurements showed
 
----
+**Cached input is free.** It does not appear in the cost model at all. A session
+carrying 220K tokens of context costs barely more per turn than one carrying 40K.
+*Don't clear context to save quota* — you pay full price to read it back.
 
-## What it shows
+**Every request has a floor.** ~0.0667% on Sol regardless of size, so roughly 15
+requests consume 1% of the five-hour window even when almost nothing comes back.
+Redundant tool loops are expensive even when they're tiny.
 
-<img src="docs/panel-en.png" width="372" alt="The expanded panel: token breakdown, both quota windows, per-model spend, and the same workload priced on every other model">
+**Effort is not charged at a premium — on Sol.** Higher effort costs more only
+because it emits more reasoning tokens; across five levels the multiplier stayed
+at 1.0 ± 0.1. In practice Sol at max effort still undercuts Astra at low effort,
+so **turn the effort dial up before reaching for a bigger model.**
 
-The last section is the one that took the most work to earn. Those same tokens
-would have cost 0% on Luna and about 8% on Sol — against the 35% they actually
-cost on Astra.
-
-The screenshots here are produced by `--render`, so they can be regenerated from
-real data instead of hand-captured.
-
-When collapsed, CodexCost stays out of the way beside the notch and shows the current model and quota usage.
-
-Open it to see:
-
-- 5-hour and weekly quota usage
-- estimated burn rate
-- token breakdown
-- which models consumed the quota
-- how the same workload would compare on other models
-
-At 80% and 95% of the 5-hour window, it can notify you before you hit the limit. If a cheaper model would likely make a meaningful difference, the notification also suggests one.
-
-The goal is not to tell you to always use the cheapest model. It is to make the trade-off visible.
-
----
-
-## Why I built it
-
-I kept seeing Codex quota disappear much faster on some sessions than others, but the usual usage number did not explain what changed.
-
-Was it:
-
-- a larger context?
-- more reasoning?
-- more output?
-- too many small requests?
-- the model itself?
-- cached context being charged again?
-
-So I started measuring it.
-
-The current model comes from **421 controlled calls across 23 experiment cells**, with one variable changed at a time. The raw data and experiment harness are in [research/](research/).
-
-This is still an experiment, not an official OpenAI billing model. The numbers below describe what I measured on one Plus account in September 2026.
-
----
-
-## What I found
-
-### 1. Cached input appears to be effectively free
-
-In my measurements, cached input did not show up as a meaningful driver of quota burn.
-
-That means a long-running session with 220K tokens of context can cost only slightly more per turn than a much smaller session, as long as most of that context stays cached.
-
-**Clearing context just to save quota can backfire**, because rebuilding it means paying for fresh input again.
-
-### 2. Small requests still have a floor
-
-On gpt-5.6-sol, I measured a per-request floor of about **0.0667%** of the 5-hour window.
-
-So even tiny requests are not free. Roughly 15 requests can consume 1% of the window even when very little text comes back.
-
-That makes unnecessary tool loops and repeated tiny calls worth paying attention to.
-
-### 3. Reasoning effort was not independently more expensive on Sol
-
-For gpt-5.6-sol, higher reasoning effort cost more mainly because it produced more reasoning tokens. I did not observe a separate premium multiplier for the effort setting itself.
-
-Across five effort levels, the measured multiplier stayed around **1.0 ± 0.1**.
-
-One practical implication from this dataset: before jumping to a more expensive model, it can be worth trying a higher reasoning setting on Sol first.
-
-### 4. Astra behaves very differently
-
-A single "Astra is X times more expensive" number was not enough to describe what I measured.
-
-Relative to Sol, Astra's input, output/reasoning, and request-floor components behaved differently. Long, verbose Astra runs were especially expensive, while short, focused calls were much easier on quota.
-
----
+**Astra needs three numbers, not one.** Its input, output and request-floor
+components sit at different multiples of Sol's, so any single "Astra is N×"
+figure drifts between 3× and 11× depending purely on how much the model talks.
+Short, decisive Astra work is affordable; long reasoning chains on it are not.
 
 ## Measured coefficients
 
-Each model uses three coefficients rather than one overall multiplier:
+Each model gets three coefficients instead of one multiplier:
 
 | Model | New input per 1% | Output + reasoning per 1% | Per request |
 |---|---:|---:|---:|
-| gpt-5.6-sol | 41,398 tok | 15,450 tok | 0.0667% |
-| gpt-5.5 | 48,137 tok | 17,965 tok | 0.0574% |
-| gpt-5.6-terra | 46,000 tok | 17,167 tok | 0.0600% |
-| gpt-5.6-luna | free | free | free |
-| gpt-6-astra | 15,415 tok | 2,495 tok | 0.3514% |
+| `gpt-5.6-sol` | 41,398 tok | 15,450 tok | 0.0667% |
+| `gpt-5.5` | 48,137 tok | 17,965 tok | 0.0574% |
+| `gpt-5.6-terra` | 46,000 tok | 17,167 tok | 0.0600% |
+| `gpt-5.6-luna` | free | free | free |
+| `gpt-6-astra` | 15,415 tok | 2,495 tok | 0.3514% |
 
-For Astra, the three components were roughly **2.7× / 6× / 5.3×** Sol in this dataset. Depending on the shape of the request, the effective multiplier can therefore move a lot.
+<details>
+<summary><b>How this was measured, and where it's shaky</b></summary>
 
----
+<br>
 
-## How trustworthy are these numbers?
+These numbers are only worth something if you know their error bars.
 
-There are some important limits.
+**Reliability, by model**
 
-- **Token counts are estimated.** They are derived from local session/tool output, not official billed token records.
-- **Quota readings are integers.** Small changes have large rounding error. Experiments that moved quota by only a few percentage points are much noisier.
-- **Usage is event-driven.** Codex writes a new reading when it makes a request, so the latest value can be stale after a quiet period. CodexCost checks resets_at to avoid showing an old percentage after the window has rolled over.
-- **The 5-hour limit behaves like a rolling window.** In the captured data, usage sometimes dropped sharply as an earlier burst aged out.
-- **Sol has the strongest dataset.** Its per-call regression reached R² 0.987 across 22 cells.
-- **5.5 and Terra are difficult to distinguish from Sol** at the current measurement resolution.
-- **Astra and Luna have fewer samples**, so treat their numbers as directional rather than precise.
-- **All measurements came from one Plus account in September 2026.** OpenAI can change metering behavior at any time.
+- **Sol is solid** — 22 cells, R² 0.987 on a per-call regression.
+- **5.5 and Terra are indistinguishable from Sol** at this resolution. Their
+  error bars overlap; treat all three as ≈1×.
+- **Astra and Luna rest on ~30–40 calls each.** Read them as order-of-magnitude.
 
-If you want to re-check the model on your own account, the experiment harness in research/ includes a control cell.
+**Known limits of the method**
 
-And one important wording point: on a subscription, lower token usage does not literally save money. It gives you **more headroom before you hit the quota wall**.
+- **Token counts are estimated** from the size of tool output, not billed
+  figures. Use them for ratios, not accounting.
+- **Quota readings are integers.** A cell measured over Δ=4% carries ±12%
+  uncertainty from rounding alone; only large-Δ cells are trustworthy.
+- **`max − min` systematically understates Δ** when a cell has few samples —
+  and the expensive models are exactly the ones that run out of budget fastest.
+  An early Astra estimate of 2.45× was wrong for this reason.
+- **Windows run to 100% must be discarded.** The counter saturates while tokens
+  keep flowing, so Δ is truncated.
+- **Concurrency contaminates attribution.** Don't use Codex while measuring.
 
----
+**Two things about the quota system itself**
+
+- **Readings are event-driven.** The logs record a value only when Codex makes a
+  request, so "current usage" is always as of the last request. After a window
+  rolls over with no activity the last reading is stale — codex-cost detects this
+  via `resets_at`. *Tools that skip that check will happily show you 99% on an
+  empty window.*
+- **The 5-hour limit is a rolling window, not a fixed one.** Usage going from 84%
+  to 0% in 43 minutes appears in the data; a fixed window cannot do that, a
+  rolling one can when a burst ages out together.
+
+**Scope:** one account, Plus plan, September 2026. Metering can change — the
+harness has a `control` cell for re-checking.
+
+</details>
+
+<details>
+<summary><b>Command-line flags</b></summary>
+
+<br>
+
+```bash
+open CodexCost.app --args --menubar    # force menu-bar mode
+open CodexCost.app --args --expanded   # start with the panel open
+./codex-cost --render panel.png        # render the panel offscreen to a PNG
+./codex-cost --lang en                 # override the system language
+./codex-cost --dump                    # print the numbers to stdout
+```
+
+The screenshots in this README are produced by `--render`, so they regenerate
+from real data instead of being hand-captured.
+
+</details>
 
 ## Privacy
 
-CodexCost reads ~/.codex/sessions locally.
-
-It does not send telemetry or upload your prompts, files, or session contents. The UI only shows aggregate usage data.
-
----
+Reads `~/.codex/sessions` locally. No network calls, no telemetry, nothing
+uploaded. The panel shows aggregate numbers only — no prompts, no file contents.
 
 ## Repo layout
 
-~~~text
-Sources/     macOS app, native Swift
-cli/         terminal version of the same cost model
-research/    experiment harness and all 421 raw trials
-~~~
+```
+Sources/     the app — Swift, no dependencies
+cli/         the same cost model as a terminal tool
+research/    the experiment harness and all 421 raw trials
+docs/        rendered screenshots
+```
 
----
+## Contributing
+
+Measurements from other plans and accounts are the most useful thing you could
+contribute — the coefficients here come from a single Plus account. Run
+`research/quota_probe.py` and open an issue with the output.
 
 ## License
 
-MIT
+[MIT](LICENSE)
