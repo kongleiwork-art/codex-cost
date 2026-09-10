@@ -54,11 +54,11 @@ COEF = {
 DEFAULT_COEF = COEF["gpt-5.6-sol"]
 UNCERTAIN = {"gpt-6-astra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"}
 
-def cost_pct(fresh, outside, requests, model):
-    f, o, r = COEF.get(model, DEFAULT_COEF)
+def cost_pct(fresh, outside, requests, model, cached=0):
+    f, ca, o, r = COEF.get(model, DEFAULT_COEF)
     if f is None:
         return 0.0
-    return fresh / f + outside / o + r * requests
+    return fresh / f + cached / ca + outside / o + r * requests
 
 def effective_mult(model):
     """相对 sol 的等效倍数只在给定构成下才有意义，这里给个粗略参考。"""
@@ -202,18 +202,19 @@ def fmt_ts(ts):
 
 # ── 报告 ─────────────────────────────────────────────────────────────────
 def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_model=None):
-    cost = {m: cost_pct(d["fresh"], d["outside"], d["requests"], m)
+    cost = {m: cost_pct(d["fresh"], d["outside"], d["requests"], m, d["cached"])
             for m, d in per_model.items()}
     spent = sum(cost.values())
     def comp(idx):
         t = 0.0
         for m, d in per_model.items():
-            f, o, r = COEF.get(m, DEFAULT_COEF)
+            f, ca, o, r = COEF.get(m, DEFAULT_COEF)
             if f is None:
                 continue
-            t += (d["fresh"] / f, d["outside"] / o, r * d["requests"])[idx]
+            t += (d["fresh"] / f, d["cached"] / ca, d["outside"] / o,
+                  r * d["requests"])[idx]
         return t
-    c_fresh, c_out, c_req = comp(0), comp(1), comp(2)
+    c_fresh, c_cached, c_out, c_req = comp(0), comp(1), comp(2), comp(3)
 
     start = fmt_ts(since_iso) if since_iso else "?"
     cm = f"  \033[1m{current_model}\033[0m" if current_model else ""
@@ -222,13 +223,14 @@ def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_mod
     if spent > 0:
         for name, c, detail in (
             ("新读进来的内容", c_fresh, f"{total['fresh']:,} tok"),
+            ("缓存输入",     c_cached, f"{total['cached']:,} tok"),
             ("模型写出来的",   c_out,   f"{total['outside']:,} tok"),
             ("每次请求的底价", c_req,   f"{total['requests']} 次 × 0.067%"),
         ):
             print(f"    {name:<8} {c:>6.1f}%  {bar(c/spent*100, 16)}  \033[2m{detail}\033[0m")
     if total["cached"]:
-        print(f"    \033[2m复用缓存 {total['cached']:,} tok —— 不计费"
-              f"（否则要多花 {total['cached']/FRESH_PER_PCT:.0f}%）\033[0m")
+        print(f"    \033[2m缓存按 fresh 的约 1/16 计价"
+              f"（若按 fresh 全价要 {total['cached']/FRESH_PER_PCT:.0f}%）\033[0m")
     if spent and c_req / spent > 0.35 and total["requests"] > 10:
         print(f"    \033[33m⚠ 底价占了 {c_req/spent*100:.0f}%：请求太碎，合并成更少轮次能直接省\033[0m")
 
@@ -250,7 +252,8 @@ def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_mod
     tf = sum(d["fresh"] for d in per_model.values())
     to = sum(d["outside"] for d in per_model.values())
     tn = sum(d["requests"] for d in per_model.values())
-    alt = {m: cost_pct(tf, to, tn, m) for m in COEF}
+    tc = sum(d["cached"] for d in per_model.values())
+    alt = {m: cost_pct(tf, to, tn, m, tc) for m in COEF}
     print(f"\n\033[1m  同样这些活，全用一个模型的话\033[0m")
     for m, v in sorted(alt.items(), key=lambda kv: kv[1]):
         cur = "  \033[1m← 你现在用的\033[0m" if m == current_model else ""
@@ -298,22 +301,25 @@ def main():
             "sessions": n_sessions,
             "fresh": total["fresh"], "cached": total["cached"],
             "output_side": total["outside"], "requests": total["requests"],
-            "spent_pct": sum(cost_pct(d["fresh"], d["outside"], d["requests"], m)
+            "spent_pct": sum(cost_pct(d["fresh"], d["outside"], d["requests"], m,
+                                      d["cached"])
                              for m, d in per_model.items()),
             "by_component": {
                 "fresh": sum(d["fresh"] / (COEF.get(m, DEFAULT_COEF)[0] or 1e18)
                              for m, d in per_model.items()),
-                "output": sum(d["outside"] / (COEF.get(m, DEFAULT_COEF)[1] or 1e18)
+                "output": sum(d["outside"] / (COEF.get(m, DEFAULT_COEF)[2] or 1e18)
                               for m, d in per_model.items()),
-                "requests": sum(COEF.get(m, DEFAULT_COEF)[2] * d["requests"]
+                "requests": sum(COEF.get(m, DEFAULT_COEF)[3] * d["requests"]
                                 for m, d in per_model.items()),
             },
             "by_model": {m: {"requests": d["requests"],
-                             "pct": cost_pct(d["fresh"], d["outside"], d["requests"], m)}
+                             "pct": cost_pct(d["fresh"], d["outside"], d["requests"], m,
+                                             d["cached"])}
                          for m, d in per_model.items()},
             "counterfactual": {m: cost_pct(sum(d["fresh"] for d in per_model.values()),
                                            sum(d["outside"] for d in per_model.values()),
-                                           sum(d["requests"] for d in per_model.values()), m)
+                                           sum(d["requests"] for d in per_model.values()), m,
+                                           sum(d["cached"] for d in per_model.values()))
                                for m in COEF},
             "quota": {str(k): v for k, v in quota.items()},
             "quota_read_at": quota_ts,

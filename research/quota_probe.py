@@ -100,6 +100,15 @@ def matrix():
         C.append(dict(cell=f"input/{kb}k", prompt=padded(kb), model=BASE_MODEL,
                       effort=BASE_EFFORT, resume=False, trials=6,
                       why=f"约 {kb}KB 填充，output 固定"))
+    # I —— 缓存到底收不收费。
+    # 真实使用中发现反例：148 次请求、每轮扛约 15 万上下文的会话实测 82%，
+    # 模型（缓存按零计价）只算 48%，缺口约对应 29 万缓存 token/1%。
+    # 而 cache/warm 那组（上下文最多 26 万）给的是 170 万 tok/1%，差 6 倍。
+    # 这组专测大上下文持续场景：首轮塞 400KB 把上下文撑到十几万，
+    # 之后每轮只发一个字，fresh 几乎不涨，缓存量线性累积。
+    C.append(dict(cell="cache/bigctx", prompt=TINY, seed=padded(400), _tiny=TINY,
+                  model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=60,
+                  why="大上下文持续场景，定缓存费率"))
     # H —— 纯 astra + 强制大量输出：把输出侧系数单独测准。
     # 之前那个 461 tok/1%（"贵 34 倍"）是在两个已打满窗口上做残差得来的，
     # 误差叠加且是下界。这一组让输出占成本的 ~80%，且 55% 就停不打满。
@@ -325,6 +334,12 @@ def cmd_run(args):
             resume_id = None
             consecutive_fail = 0
             for i in range(need):
+                # seed：仅第一轮用，用来一次性建立大上下文；
+                # 之后每轮只发极短 prompt，让 fresh 几乎不涨、缓存主导成本
+                if c.get("seed") and i == 0:
+                    c = dict(c, prompt=c["seed"])
+                elif c.get("seed") and i == 1:
+                    c = dict(c, prompt=c["_tiny"])
                 cur = current_quota()
                 used = cur.get(WIN_5H, {}).get("used_percent", start_pct) - start_pct
                 if used >= args.budget:

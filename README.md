@@ -52,17 +52,12 @@ package manager, no account, no API key.
 
 ## What the measurements showed
 
-**Cached input is cheap — but probably not free.** In the controlled cells it
-never showed up as a driver: 1.7M cached tokens moved the counter about 1%. But
-a real 148-request session carrying ~150K of context per turn burned 82% where
-this model predicted 48%, and the gap tracks cached volume at roughly 290K
-tokens per 1%. The likely reading is that cached input carries a small rate that
-stays buried under the ±0.5% rounding floor in short experiments and only
-surfaces under sustained large contexts. **codex-cost currently prices cached
-input at zero, so it under-estimates long, context-heavy sessions** — the panel
-flags this as an estimate gap when it happens. The practical advice survives:
-don't clear context just to save quota, because rebuilding it costs full fresh
-price. "Free" was too strong.
+**Cached input is cheap, not free — about 16× cheaper than fresh.** One percent
+of the five-hour window buys ~41K fresh input tokens or ~677K cached ones. This
+matters more than it sounds: a long session carrying 150K of context across 148
+turns spends roughly a third of its quota on cached input alone. *Still don't
+clear context to save quota* — rebuilding it costs full fresh price, which is
+16× worse. But a very long session is not free either.
 
 **Every request has a floor.** ~0.0667% on Sol regardless of size, so roughly 15
 requests consume 1% of the five-hour window even when almost nothing comes back.
@@ -82,13 +77,16 @@ Short, decisive Astra work is affordable; long reasoning chains on it are not.
 
 Each model gets three coefficients instead of one multiplier:
 
-| Model | New input per 1% | Output + reasoning per 1% | Per request |
-|---|---:|---:|---:|
-| `gpt-5.6-sol` | 41,398 tok | 15,450 tok | 0.0667% |
-| `gpt-5.5` | 48,137 tok | 17,965 tok | 0.0574% |
-| `gpt-5.6-terra` | 46,000 tok | 17,167 tok | 0.0600% |
-| `gpt-5.6-luna` | free | free | free |
-| `gpt-6-astra` | 15,415 tok | 2,495 tok | 0.3514% |
+| Model | New input per 1% | Cached input per 1% | Output + reasoning per 1% | Per request |
+|---|---:|---:|---:|---:|
+| `gpt-5.6-sol` | 41,398 tok | 677,444 tok | 15,450 tok | 0.0667% |
+| `gpt-5.5` | 48,137 tok | 787,521 tok | 17,965 tok | 0.0574% |
+| `gpt-5.6-terra` | 46,000 tok | 752,560 tok | 17,167 tok | 0.0600% |
+| `gpt-5.6-luna` | free | free | free | free |
+| `gpt-6-astra` | 15,415 tok | 252,190 tok | 2,495 tok | 0.3514% |
+
+Cached rates are measured on Sol and extrapolated to the others at the same 16.4×
+ratio.
 
 <details>
 <summary><b>How this was measured, and where it's shaky</b></summary>
@@ -128,12 +126,23 @@ These numbers are only worth something if you know their error bars.
   to 0% in 43 minutes appears in the data; a fixed window cannot do that, a
   rolling one can when a burst ages out together.
 
-**Open question: the cost of cached input**
+**How the cached rate was pinned down, after getting it wrong twice**
 
-The controlled cells and real usage disagree by about 6× on this. Every cell was
-short-context; the disagreement only appears in sessions that carry a large
-context across many turns. Until that regime is measured properly the model
-leaves cached input at zero and reports the shortfall rather than hiding it.
+The first answer was "cached input is free," and it was wrong — the result of an
+analysis bug, not bad data. Resumed-session cells record *cumulative* token
+counts, and the analysis summed them across trials, inflating cached volume ~7×.
+Dividing that inflated number by the observed Δ made cache look free.
+
+A purpose-built cell settled it: seed a session with a 400KB pad, then send 60
+one-word turns so fresh input stays flat while cached volume grows linearly.
+Δ reached 24% with cache accounting for 45% of the cost — well clear of the
+rounding floor. The resulting 677,444 tok/1% reconciles all three datasets:
+
+| | predicted | observed |
+|---|---:|---:|
+| `cache/warm` cell | 1.4% | 1% |
+| `cache/bigctx` cell | 24.0% | 24% |
+| a real 148-request session | 80.7% | 82% |
 
 **Scope:** one account, Plus plan, September 2026. Metering can change — the
 harness has a `control` cell for re-checking.

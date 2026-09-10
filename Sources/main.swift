@@ -44,6 +44,7 @@ final class Store: ObservableObject {
 enum Palette {
     static let read  = Color(red: 0.30, green: 0.68, blue: 1.00)
     static let write = Color(red: 0.72, green: 0.44, blue: 1.00)
+    static let cached = Color(red: 0.36, green: 0.80, blue: 0.72)   // 青：缓存输入
     static let floor = Color(red: 1.00, green: 0.74, blue: 0.25)
     static let other = Color(red: 1.00, green: 0.42, blue: 0.40)
     static func quota(_ v: Double) -> Color {
@@ -229,28 +230,30 @@ struct Expanded: View {
 
     // 成本构成
     @ViewBuilder func composition(_ s: Snapshot) -> some View {
-        let cf = s.costFresh, co = s.costOutput, cr = s.costRequest
+        let cf = s.costFresh, cc = s.costCached, co = s.costOutput, cr = s.costRequest
         let gap = max(0, s.gap)
         let showGap = gap > max(4, (s.fiveHour?.usedPercent ?? 0) * 0.2)
         var parts: [(Double, Color)] {
-            var p: [(Double, Color)] = [(cf, Palette.read), (co, Palette.write), (cr, Palette.floor)]
+            var p: [(Double, Color)] = [(cf, Palette.read), (cc, Palette.cached),
+                                        (co, Palette.write), (cr, Palette.floor)]
             if showGap { p.append((gap, Palette.other)) }
             return p
         }
         StackedBar(parts: parts).padding(.top, 13)
-        HStack(spacing: 13) {
+        HStack(spacing: 10) {
             legend(L.freshIn, cf, Palette.read)
+            legend(L.cachedIn, cc, Palette.cached)
             legend(L.modelOut, co, Palette.write)
             legend(L.reqFloor, cr, Palette.floor)
             Spacer(minLength: 0)
         }
         .padding(.top, 9)
         if s.cached > 0 {
-            Text(L.cachedFree(fmtTokens(s.cached)))
+            Text(L.cachedNote(fmtTokens(s.cached), "16"))
                 .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.34))
                 .padding(.top, 6)
         }
-        let sum = max(cf + co + cr, 0.0001)
+        let sum = max(cf + cc + co + cr, 0.0001)
         if cr / sum > 0.35 && s.requests > 10 {
             Text(L.choppy(Int(cr / sum * 100)))
                 .font(.system(size: 9.5)).foregroundStyle(Palette.floor.opacity(0.9))

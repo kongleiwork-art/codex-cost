@@ -25,8 +25,10 @@ enum L {
     static var freshIn        : String { s("新增输入", "New input") }
     static var modelOut       : String { s("模型输出", "Model output") }
     static var reqFloor       : String { s("请求开销", "Per-request") }
-    static func cachedFree(_ t: String) -> String {
-        s("命中缓存 \(t)，这部分不花额度", "\(t) served from cache — costs nothing")
+    static var cachedIn : String { s("缓存输入", "Cached input") }
+    static func cachedNote(_ t: String, _ x: String) -> String {
+        s("其中 \(t) 命中缓存，按 fresh 的 1/\(x) 计价",
+          "\(t) of it came from cache, billed at ~1/\(x) of fresh")
     }
     static func choppy(_ pct: Int) -> String {
         s("请求太零碎，光固定开销就占了 \(pct)%",

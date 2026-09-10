@@ -18,39 +18,47 @@ enum Budget {
     //   astra —— 纯 astra、未打满窗口的累积回归；输出侧用强制长输出的一组单独定
     //   5.5 / terra —— 只测到整体乘数（±0.11），按比例缩放
     //   luna  —— 30 次调用零消耗
-    // 已知局限：模型不含缓存输入这一项。受控实验里 170 万缓存只动了约 1%，
-    // 但真实的长会话（每轮扛 15 万上下文、连续 148 次）实测 82%、模型只算 48%，
-    // 缺口约对应 29 万缓存 token/1%。两者差 6 倍，且只在大上下文场景分歧，
-    // 所以在正经测过之前保持按零计价，由 gap 把差额如实报出来。
+    // 缓存输入不是免费的，只是便宜约 16 倍。
+    //
+    // 早前的「缓存免费」结论是分析 bug：续会话的实验组记录的是累计 token，
+    // 而分析代码把它当每次增量又求和了一遍，缓存量虚增约 7 倍，除下来就得出
+    // 「170 万 token 才 1%」的假象。专门做的大上下文实验（60 次、Δ=24%、
+    // 缓存占成本 45%、未打满）给出 677,444 tok/1%，并且能同时对上
+    // cache/warm（预测 1.4% / 实测 1%）和一个真实长会话（预测 80.7% / 实测 82%）。
     struct Coef {
         let fresh: Double?      // 每 1% 额度能买多少 fresh 输入 token；nil = 不计费
+        let cached: Double?     // 每 1% 能买多少缓存输入 token（约为 fresh 的 16.4 倍）
         let output: Double?
         let request: Double     // 每次请求的固定成本（%）
     }
 
+    // 缓存系数只在 sol 上实测过（677,444）；其余按各自 fresh 的 16.4 倍外推。
     static let coef: [String: Coef] = [
-        "gpt-5.6-sol":   Coef(fresh: 41_398, output: 15_450, request: 0.0667),
-        "gpt-5.5":       Coef(fresh: 48_137, output: 17_965, request: 0.0574),
-        "gpt-5.6-terra": Coef(fresh: 46_000, output: 17_167, request: 0.0600),
-        "gpt-5.6-luna":  Coef(fresh: nil,    output: nil,    request: 0.0),
-        "gpt-6-astra":   Coef(fresh: 15_415, output:  2_495, request: 0.3514),
+        "gpt-5.6-sol":   Coef(fresh: 41_398, cached: 677_444, output: 15_450, request: 0.0667),
+        "gpt-5.5":       Coef(fresh: 48_137, cached: 787_521, output: 17_965, request: 0.0574),
+        "gpt-5.6-terra": Coef(fresh: 46_000, cached: 752_560, output: 17_167, request: 0.0600),
+        "gpt-5.6-luna":  Coef(fresh: nil,    cached: nil,     output: nil,    request: 0.0),
+        "gpt-6-astra":   Coef(fresh: 15_415, cached: 252_190, output:  2_495, request: 0.3514),
     ]
-    static let fallback = Coef(fresh: 41_398, output: 15_450, request: 0.0667)
+    static let fallback = Coef(fresh: 41_398, cached: 677_444, output: 15_450, request: 0.0667)
     static let windowMinutes5h = 300.0
     static let windowMinutesWeek = 10080.0
 
-    static func cost(fresh: Int, output: Int, requests: Int, model: String?) -> Double {
+    static func cost(fresh: Int, cached: Int = 0, output: Int, requests: Int,
+                     model: String?) -> Double {
         let c = coef[model ?? ""] ?? fallback
-        guard let f = c.fresh, let o = c.output else { return 0 }
-        return Double(fresh) / f + Double(output) / o + c.request * Double(requests)
+        guard let f = c.fresh, let o = c.output, let cc = c.cached else { return 0 }
+        return Double(fresh) / f + Double(cached) / cc
+             + Double(output) / o + c.request * Double(requests)
     }
 
     // MARK: 结果
 
     struct Window { var usedPercent: Double; var resetsAt: Double?; var stale: Bool }
-    struct ModelUse { var requests: Int; var fresh: Int; var output: Int
-                      var pct: Double { Budget.cost(fresh: fresh, output: output,
-                                                    requests: requests, model: model) }
+    struct ModelUse { var requests: Int; var fresh: Int; var cached: Int; var output: Int
+                      var pct: Double { Budget.cost(fresh: fresh, cached: cached,
+                                                    output: output, requests: requests,
+                                                    model: model) }
                       var model: String }
     struct Result {
         var windowStart: Date
@@ -82,6 +90,9 @@ enum Budget {
         var costFresh: Double { byModel.values.reduce(0) {
             guard let f = (Budget.coef[$1.model] ?? Budget.fallback).fresh else { return $0 }
             return $0 + Double($1.fresh) / f } }
+        var costCached: Double { byModel.values.reduce(0) {
+            guard let c = (Budget.coef[$1.model] ?? Budget.fallback).cached else { return $0 }
+            return $0 + Double($1.cached) / c } }
         var costOutput: Double { byModel.values.reduce(0) {
             guard let o = (Budget.coef[$1.model] ?? Budget.fallback).output else { return $0 }
             return $0 + Double($1.output) / o } }
@@ -92,7 +103,8 @@ enum Budget {
         var gap: Double { (fiveHour?.usedPercent ?? 0) - spent }
         /// 同样这些 token，全用某个模型的话
         func counterfactual(_ model: String) -> Double {
-            Budget.cost(fresh: fresh, output: output, requests: requests, model: model)
+            Budget.cost(fresh: fresh, cached: cached, output: output,
+                        requests: requests, model: model)
         }
     }
 
@@ -216,8 +228,9 @@ enum Budget {
                          + (u["reasoning_output_tokens"] as? Int ?? 0)
                 let fresh = max(0, inp - cch)
                 let key = model ?? "?"
-                var e = agg[key] ?? ModelUse(requests: 0, fresh: 0, output: 0, model: key)
-                e.requests += 1; e.fresh += fresh; e.output += outp
+                var e = agg[key] ?? ModelUse(requests: 0, fresh: 0, cached: 0,
+                                             output: 0, model: key)
+                e.requests += 1; e.fresh += fresh; e.cached += cch; e.output += outp
                 agg[key] = e
                 totals.f += fresh; totals.c += cch; totals.o += outp; totals.n += 1
                 if newest == nil || ts > newest!.0 { newest = (ts, key) }
