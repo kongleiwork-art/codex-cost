@@ -4,6 +4,11 @@ import Foundation
 /// 保持零构建配置。
 enum L {
     static let isZH: Bool = {
+        // --lang zh|en 可强制覆盖，出 README 素材时两版都要
+        if let i = CommandLine.arguments.firstIndex(of: "--lang"),
+           i + 1 < CommandLine.arguments.count {
+            return CommandLine.arguments[i + 1].hasPrefix("zh")
+        }
         let pref = Locale.preferredLanguages.first ?? "en"
         return pref.hasPrefix("zh")
     }()

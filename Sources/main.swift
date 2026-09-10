@@ -385,7 +385,7 @@ struct Root: View {
     @ObservedObject var store: Store
     let notchWidth: CGFloat
     let onResize: (Bool) -> Void
-    @State private var expanded = false
+    @State private var expanded = CommandLine.arguments.contains("--expanded")
     @State private var hovering = false
 
     var body: some View {
@@ -568,7 +568,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let host = NSHostingView(rootView: root)
         host.autoresizingMask = [.width, .height]
         window.contentView = host
-        place(collapsedSize, animated: false)
+        // --expanded：启动即展开。截图和录 demo 用 —— 程序化点击要辅助功能权限，
+        // 这样就不需要了。
+        place(CommandLine.arguments.contains("--expanded") ? expandedSize : collapsedSize,
+              animated: false)
         window.orderFrontRegardless()
         _ = screen
     }
@@ -602,6 +605,13 @@ enum Launcher {
     @MainActor static func main() {
         // --dump 必须在 NSApplication 启动前处理：一旦 app.run() 起来，
         // 这是个常驻 GUI 进程，不会退出（之前误以为是卡死）。
+        // --render <路径>：离屏出图，不需要屏幕亮着
+        if let i = CommandLine.arguments.firstIndex(of: "--render"),
+           i + 1 < CommandLine.arguments.count {
+            let app = NSApplication.shared
+            app.setActivationPolicy(.prohibited)
+            Renderer.run(to: CommandLine.arguments[i + 1])
+        }
         if CommandLine.arguments.contains("--dump") {
             let r = Budget.compute()
             print("requests   \(r.requests)")
