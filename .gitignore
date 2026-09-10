@@ -1,0 +1,9 @@
+# 构建产物
+codex-cost
+CodexCost.app/
+*.o
+# 系统
+.DS_Store
+# Python
+__pycache__/
+*.py[cod]

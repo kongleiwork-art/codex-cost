@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""quota_probe — 受控实验：测出 Codex 订阅额度到底按什么计费。
+
+为什么需要它：观测性数据里 cached / output / 请求数 三者高度共线
+（实测 r = 0.83~0.95），所以无论收集多久的真实开发数据，都分不开
+"是缓存便宜" 还是 "按请求计费"。只有固定其余条件、单独改一个变量，
+才能把它们拆开。
+
+用法：
+    python3 quota_probe.py plan                    # 只打印实验矩阵，不消耗任何额度
+    python3 quota_probe.py run --yes --budget 15   # 真正执行，最多烧掉 15% 的 5h 额度
+    python3 quota_probe.py analyze                 # 分析已收集的结果
+
+结果追加写入 results.jsonl，可随时中断续跑。零依赖，标准库，Python 3.8+。
+"""
+from __future__ import annotations
+import argparse, glob, json, os, subprocess, sys, time
+from datetime import datetime, timezone
+
+__version__ = "0.1.0"
+HOME = os.path.expanduser("~")
+SESS_GLOB = os.path.join(HOME, ".codex/sessions/**/rollout-*.jsonl")
+CODEX_CANDIDATES = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/usr/local/bin/codex", "/opt/homebrew/bin/codex",
+    os.path.join(HOME, ".local/bin/codex"),
+]
+HERE = os.path.dirname(os.path.abspath(__file__))
+RESULTS = os.path.join(HERE, "results.jsonl")
+WIN_5H, WIN_WEEK = 300, 10080
+
+def find_codex():
+    for p in CODEX_CANDIDATES:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    from shutil import which
+    return which("codex")
+
+# ── 实验矩阵 ─────────────────────────────────────────────────────────────
+# 每一组内部只变一个维度，其余全部固定 —— 这是能解开共线性的唯一方式。
+BASE_MODEL  = "gpt-5.6-sol"
+BASE_EFFORT = "medium"
+
+TINY   = ("Reply with exactly the word OK. Do not use any tools. "
+          "Do not explain. Do not read any files.")
+LONG   = ("Write exactly 600 words explaining why merge sort is stable and "
+          "quicksort is not. Plain prose, no lists, no tools, no file reads.")
+# effort 组必须用真正触发推理的任务。
+# 试过两版都失败：「回一个 OK」不触发推理；经典斑马谜题被模型背了下来
+# （output 仅 5 token，reasoning 0）。必须是不可能记住的搜索型问题。
+# 实测本题在 effort=high 下产生 823 个 reasoning token。
+REASON = ("Without using any tools, work this out by hand and show no working — "
+          "give only the final answer.\n"
+          "Consider every 5-digit number whose digits are strictly increasing "
+          "(each digit larger than the one before) and whose digit sum is exactly 27. "
+          "How many such numbers are there, and what is the largest one? "
+          "Answer in the form: count=N largest=M")
+
+# 让输出侧主导成本：prompt 本身很短（fresh 低），但要求长篇输出 + 推理。
+VERBOSE = ("Explain, in about 900 words of flowing prose with no lists and no "
+           "headings, why merge sort is stable while quicksort is not, what "
+           "stability actually costs in memory and time, and when a practitioner "
+           "should care. Work through the reasoning carefully before writing.")
+
+def padded(kb):
+    """把同一个任务塞进不同大小的上下文里 —— 只变 input tokens。"""
+    filler = ("The quick brown fox jumps over the lazy dog. " * 24 + "\n") * kb
+    return (f"<reference-material>\n{filler}</reference-material>\n"
+            "Ignore the reference material entirely. Reply with exactly the "
+            "word OK. Do not use any tools.")
+
+def matrix():
+    C = []
+    # 对照组：隔天/隔周续跑时先重测它。若换算率和上次不一致，
+    # 说明官方改了计费口径，之前的数据不能和新数据混用。
+    C.append(dict(cell="control", prompt=TINY, model=BASE_MODEL, effort=BASE_EFFORT,
+                  resume=False, trials=20,
+                  why="对照组，用来验证计费口径没变"))
+    # A —— 缓存：同一个 prompt，冷启动 vs 复用会话吃缓存
+    C.append(dict(cell="cache/cold", prompt=TINY, model=BASE_MODEL, effort=BASE_EFFORT,
+                  resume=False, trials=12,
+                  why="冷启动，cached_input≈0"))
+    C.append(dict(cell="cache/warm", prompt=TINY, model=BASE_MODEL, effort=BASE_EFFORT,
+                  resume=True, trials=12,
+                  why="首次建会话，其后全部续同一个会话吃缓存"))
+    # B —— reasoning effort：其余全部相同
+    # 注意：effort/* 用的就是 BASE_MODEL（gpt-5.6-sol），
+    # 与下面 astra/* 构成两个模型的同构网格，可直接横向对比。
+    for eff in ("low", "medium", "high", "xhigh", "max"):
+        C.append(dict(cell=f"effort/{eff}", prompt=REASON, model=BASE_MODEL, effort=eff,
+                      resume=False, trials=8,
+                      why="只变 reasoning effort（用真正需要推理的任务）"))
+    # C —— 输出长度：input 基本不变，output 差一个量级
+    C.append(dict(cell="output/short", prompt=TINY, model=BASE_MODEL, effort=BASE_EFFORT,
+                  resume=False, trials=8, why="output≈1 token"))
+    C.append(dict(cell="output/long", prompt=LONG, model=BASE_MODEL, effort=BASE_EFFORT,
+                  resume=False, trials=8, why="output≈800 tokens"))
+    # D —— 输入长度：output 固定，input 阶梯变化
+    for kb in (1, 20, 80):
+        C.append(dict(cell=f"input/{kb}k", prompt=padded(kb), model=BASE_MODEL,
+                      effort=BASE_EFFORT, resume=False, trials=6,
+                      why=f"约 {kb}KB 填充，output 固定"))
+    # H —— 纯 astra + 强制大量输出：把输出侧系数单独测准。
+    # 之前那个 461 tok/1%（"贵 34 倍"）是在两个已打满窗口上做残差得来的，
+    # 误差叠加且是下界。这一组让输出占成本的 ~80%，且 55% 就停不打满。
+    C.append(dict(cell="astra/verbose", prompt=VERBOSE, model="gpt-6-astra",
+                  effort="high", resume=False, trials=25,
+                  why="纯 astra、输出主导、不打满 —— 定输出侧系数"))
+    # G —— 纯 astra 的干净测量：不混其它模型（不必假设别人的系数），
+    # 且在 60% 就停（不打满 100%，避免删失把乘数压低）。
+    # 之前六个窗口用残差法得到 3.9~11.5×，全部接近上限、全是下界。
+    C.append(dict(cell="astra/clean", prompt=TINY, model="gpt-6-astra",
+                  effort=BASE_EFFORT, resume=False, trials=45,
+                  why="纯 astra、不打满，用来定乘数"))
+    # F —— astra（gpt-6 代）× effort 档位。
+    # 前沿模型上 effort 的代价差异最大，Router 的核心决策就在这里。
+    for eff in ("low", "medium", "high", "xhigh", "max"):
+        C.append(dict(cell=f"astra/{eff}", prompt=REASON, model="gpt-6-astra",
+                      effort=eff, resume=False, trials=30,
+                      why="astra 各 effort 档位"))
+    # E —— 模型：其余全部相同
+    for m in ("gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.6-terra"):
+        C.append(dict(cell=f"model/{m}", prompt=TINY, model=m, effort=BASE_EFFORT,
+                      resume=False, trials=8, why="只变模型"))
+    return C
+
+# ── 读取额度与用量 ────────────────────────────────────────────────────────
+def newest_rollouts(since_ts=0.0):
+    out = []
+    for f in glob.glob(SESS_GLOB, recursive=True):
+        try:
+            if os.path.getmtime(f) > since_ts:
+                out.append(f)
+        except OSError:
+            pass
+    return out
+
+def scan_rollout(path):
+    """把一个 rollout 里的 token 用量与最后一次额度读数取出来。"""
+    tok = dict(input_tokens=0, cached_input_tokens=0, cache_write_input_tokens=0,
+               output_tokens=0, reasoning_output_tokens=0)
+    quota = {}
+    ctx = None
+    n = 0
+    quota_ts = ""
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in fh:
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        p = d.get("payload") or {}
+        if (p.get("type") or d.get("type")) != "token_count":
+            continue
+        n += 1
+        last = (p.get("info") or {}).get("last_token_usage") or {}
+        for k in tok:
+            tok[k] += last.get(k, 0) or 0
+        ctx = (p.get("info") or {}).get("model_context_window") or ctx
+        rl = p.get("rate_limits") or {}
+        ts = d.get("timestamp") or ""
+        for slot in ("primary", "secondary"):
+            sl = rl.get(slot) or {}
+            if sl.get("window_minutes") and sl.get("used_percent") is not None:
+                if ts >= quota_ts:
+                    quota[sl["window_minutes"]] = {"used_percent": sl["used_percent"],
+                                                   "resets_at": sl.get("resets_at")}
+        if rl.get("primary") and ts > quota_ts:
+            quota_ts = ts
+    fh.close()
+    return {"tokens": tok, "quota": quota, "context_window": ctx,
+            "events": n, "quota_ts": quota_ts}
+
+def current_quota():
+    """取最新的一次额度读数。
+
+    按文件 mtime 取第一个是错的：mtime 最新的文件里可能是旧读数。
+    要在最近改动过的若干文件里，挑事件时间戳最大的那次读数。
+    """
+    files = sorted(glob.glob(SESS_GLOB, recursive=True),
+                   key=lambda f: os.path.getmtime(f), reverse=True)[:12]
+    best, best_ts = {}, ""
+    for f in files:
+        r = scan_rollout(f)
+        if r and r["quota"] and r.get("quota_ts", "") > best_ts:
+            best, best_ts = r["quota"], r["quota_ts"]
+    # 日志只在 Codex 真正发请求时更新。若某个窗口的 resets_at 已经过去，
+    # 说明窗口已经滚动，这条读数是陈旧的 —— 不修正的话会误判成额度用满。
+    now = time.time()
+    for w, v in best.items():
+        ra = v.get("resets_at")
+        if ra and ra < now:
+            v["used_percent"] = 0.0
+            v["stale"] = True
+    return best
+
+def fmt_quota(q):
+    b = []
+    for w, label in ((WIN_5H, "5h"), (WIN_WEEK, "weekly")):
+        if w in q:
+            tag = " (窗口已重置)" if q[w].get("stale") else ""
+            b.append(f"{label} {q[w]['used_percent']:.0f}%{tag}")
+    return "  ".join(b) or "(读不到)"
+
+# ── 执行 ─────────────────────────────────────────────────────────────────
+SESSION_RE = __import__("re").compile(
+    r"rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+def session_id_of(rollout_name):
+    m = SESSION_RE.search(rollout_name or "")
+    return m.group(1) if m else None
+
+def run_trial(codex, cell, workdir, timeout=300, resume_id=None):
+    """跑一次 codex exec，返回它新写出来的那个 rollout 的解析结果。"""
+    t0 = time.time() - 1
+    cmd = [codex, "exec",
+           "--skip-git-repo-check",
+           "-C", workdir,
+           "-m", cell["model"],
+           "-c", f'model_reasoning_effort="{cell["effort"]}"',
+           "-c", 'sandbox_mode="read-only"',
+           "-c", 'approval_policy="never"',
+           "-c", f'projects."{workdir}".trust_level="trusted"']
+    if cell.get("resume"):
+        # 显式指定会话 id：--last 会接到别的并发会话上，而缓存组正是最关键的一组
+        cmd += ["resume", resume_id] if resume_id else ["resume", "--last"]
+    cmd.append(cell["prompt"])
+    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        proc = subprocess.run(cmd, cwd=workdir, capture_output=True,
+                              text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+        ok = proc.returncode == 0
+        err = "" if ok else (proc.stderr or "")[-400:]
+    except subprocess.TimeoutExpired:
+        ok, err = False, "timeout"
+    except OSError as e:
+        ok, err = False, str(e)
+    time.sleep(1.5)                       # 等 rollout 落盘
+    best, best_m = None, 0.0
+    for f in newest_rollouts(t0):
+        m = os.path.getmtime(f)
+        if m > best_m:
+            best, best_m = f, m
+    parsed = scan_rollout(best) if best else None
+    name = os.path.basename(best) if best else None
+    return {"started": started, "ok": ok, "error": err,
+            "rollout": name, "session_id": session_id_of(name),
+            "elapsed_s": round(time.time() - t0, 1),
+            **(parsed or {})}
+
+def cmd_plan(args):
+    cells = matrix()
+    q = current_quota()
+    print(f"当前额度: {fmt_quota(q)}\n")
+    print(f"{'实验组':<20} {'模型':<14} {'effort':<8} {'次数':>4}  说明")
+    print("-" * 82)
+    total = 0
+    for c in cells:
+        total += c["trials"]
+        print(f"{c['cell']:<20} {c['model']:<14} {c['effort']:<8} {c['trials']:>4}  {c['why']}")
+    print("-" * 82)
+    print(f"合计 {total} 次调用，{len(cells)} 个实验组\n")
+    print("成对对比（每一对只差一个变量，这是能解开共线性的原因）：")
+    print("  cache/cold  vs cache/warm    → 缓存 token 是否真的更便宜")
+    print("  effort/low..xhigh            → reasoning effort 的额度权重")
+    print("  output/short vs output/long  → output token 的权重")
+    print("  input/1k vs 20k vs 80k       → input token 与上下文长度的权重")
+    print("  model/*                      → 各模型换算率")
+    print("\n这会消耗真实订阅额度。执行：")
+    print("  python3 quota_probe.py run --yes --budget 15")
+    return 0
+
+def load_done():
+    done = {}
+    if os.path.exists(RESULTS):
+        for line in open(RESULTS, encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if not r.get("ok"):
+                continue          # 失败不计入，否则重跑会跳过整组
+            done[r["cell"]] = done.get(r["cell"], 0) + 1
+    return done
+
+def cmd_run(args):
+    codex = find_codex()
+    if not codex:
+        sys.exit("找不到 codex 可执行文件")
+    q0 = current_quota()
+    if WIN_5H not in q0:
+        sys.exit("读不到当前额度 —— 先在 Codex 里随便跑一次，让它写出一条 rate_limits")
+    start_pct = q0[WIN_5H]["used_percent"]
+    if start_pct >= 95:
+        ra = q0[WIN_5H].get("resets_at")
+        when = ""
+        if ra:
+            from datetime import datetime, timezone as _tz
+            r = datetime.fromtimestamp(ra, _tz.utc).astimezone()
+            mins = (r - datetime.now(r.tzinfo)).total_seconds() / 60
+            when = f"，{mins:.0f} 分钟后（{r:%m-%d %H:%M}）重置" if mins > 0 else ""
+        sys.exit(f"5h 额度已用 {start_pct:.0f}%{when}。等重置后再跑，"
+                 f"否则实验会在半途撞上限，数据被删失。")
+    print(f"codex: {codex}")
+    print(f"起始额度: {fmt_quota(q0)}   预算上限: +{args.budget}%\n")
+
+    workdir = os.path.join(HERE, "sandbox")
+    os.makedirs(workdir, exist_ok=True)
+    done = load_done()
+    cells = [c for c in matrix() if not args.cell or c["cell"] == args.cell]
+    if getattr(args, "trials", None):
+        for c in cells:
+            c["trials"] = args.trials
+
+    with open(RESULTS, "a", encoding="utf-8") as out:
+        for c in cells:
+            need = c["trials"] - done.get(c["cell"], 0)
+            if need <= 0:
+                print(f"[跳过] {c['cell']} 已完成 {done[c['cell']]} 次")
+                continue
+            print(f"[{c['cell']}] 还需 {need} 次 …")
+            resume_id = None
+            consecutive_fail = 0
+            for i in range(need):
+                cur = current_quota()
+                used = cur.get(WIN_5H, {}).get("used_percent", start_pct) - start_pct
+                if used >= args.budget:
+                    print(f"\n已达预算上限（+{used:.0f}%），停止。续跑直接重新执行本命令。")
+                    return 0
+                r = run_trial(codex, c, workdir, timeout=args.timeout,
+                              resume_id=resume_id if c.get("resume") else None)
+                if c.get("resume") and not resume_id and r.get("session_id"):
+                    resume_id = r["session_id"]      # 之后每次都续这一个会话
+                rec = {"cell": c["cell"], "model": c["model"], "effort": c["effort"],
+                       "resume": bool(c.get("resume")), "trial": done.get(c["cell"], 0) + i + 1,
+                       **r}
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                out.flush()
+                if (c["cell"].startswith("effort/") and r["ok"] and i == 0
+                        and not (r.get("tokens") or {}).get("reasoning_output_tokens")):
+                    print("\n这个 prompt 没有触发推理（reasoning_output_tokens=0），"
+                          "effort 组测不出任何东西。换更难的任务再跑，别浪费额度。")
+                    return 1
+                consecutive_fail = 0 if r["ok"] else consecutive_fail + 1
+                if consecutive_fail >= 3:
+                    print(f"\n连续 3 次失败，停止。最后的错误：\n  {r.get('error','')[:300]}")
+                    return 1
+                t = r.get("tokens") or {}
+                fresh = t.get("input_tokens", 0) - t.get("cached_input_tokens", 0)
+                print(f"   #{rec['trial']:<2} {'ok ' if r['ok'] else 'ERR'} "
+                      f"fresh_in {fresh:>7,}  cached {t.get('cached_input_tokens',0):>8,}  "
+                      f"out {t.get('output_tokens',0):>6,}  "
+                      f"5h {fmt_quota(r.get('quota') or {})}  {r['elapsed_s']}s"
+                      + (f"  {r['error'][:60]}" if not r["ok"] else ""))
+    print("\n全部完成。运行 `python3 quota_probe.py analyze` 看结果。")
+    return 0
+
+def cmd_analyze(args):
+    if not os.path.exists(RESULTS):
+        sys.exit("还没有结果，先跑 run")
+    rows = []
+    for line in open(RESULTS, encoding="utf-8"):
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            pass
+    ok = [r for r in rows if r.get("ok") and r.get("tokens")]
+    print(f"试验 {len(rows)} 次，成功 {len(ok)} 次\n")
+    import collections, statistics
+    g = collections.defaultdict(list)
+    for r in ok:
+        g[r["cell"]].append(r)
+    print(f"{'实验组':<20} {'次数':>4} {'fresh_in':>9} {'cached':>9} {'output':>8} {'reason':>8} {'Δ5h%':>7}")
+    print("-" * 78)
+    for cell in sorted(g):
+        rs = g[cell]
+        med = lambda k: statistics.median([r["tokens"].get(k, 0) for r in rs])
+        pcts = [r["quota"].get(str(WIN_5H), r["quota"].get(WIN_5H, {})).get("used_percent")
+                for r in rs if r.get("quota")]
+        pcts = [p for p in pcts if p is not None]
+        d = (max(pcts) - min(pcts)) if len(pcts) >= 2 else 0
+        print(f"{cell:<20} {len(rs):>4} {med('input_tokens')-med('cached_input_tokens'):>9,.0f} "
+              f"{med('cached_input_tokens'):>9,.0f} {med('output_tokens'):>8,.0f} "
+              f"{med('reasoning_output_tokens'):>8,.0f} {d:>7.0f}")
+    print("\n成对对比 —— 每一对只差一个变量：")
+    for a, b, what in (("cache/cold", "cache/warm", "缓存"),
+                       ("output/short", "output/long", "输出长度"),
+                       ("effort/low", "effort/xhigh", "reasoning")):
+        if a in g and b in g:
+            ta = statistics.median([sum(r["tokens"].values()) for r in g[a]])
+            tb = statistics.median([sum(r["tokens"].values()) for r in g[b]])
+            print(f"  {what:<8} {a} 总 token {ta:>9,.0f}   {b} {tb:>9,.0f}   比值 {tb/max(1,ta):.2f}x")
+    for cell, rs in sorted(g.items()):
+        if cell.startswith("effort/") and not sum(
+                r["tokens"].get("reasoning_output_tokens", 0) for r in rs):
+            print(f"  ⚠ {cell}: reasoning_output_tokens 全为 0 —— 任务没触发推理，这组无效")
+    print("\n注意：单次试验的额度变化低于 1% 分辨率，所以每组必须累计到 Δ≥5% 才有意义。")
+    print("样本不足时不要下结论。")
+    return 0
+
+def main():
+    ap = argparse.ArgumentParser(prog="quota_probe",
+        description="受控实验：测 Codex 订阅额度按什么计费")
+    ap.add_argument("--version", action="version", version=f"quota_probe {__version__}")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("plan", help="打印实验矩阵，不消耗额度").set_defaults(fn=cmd_plan)
+    p = sub.add_parser("run", help="执行实验（消耗真实额度）")
+    p.add_argument("--yes", action="store_true", help="确认要消耗额度")
+    p.add_argument("--budget", type=float, default=10.0, help="最多消耗的 5h 额度百分比")
+    p.add_argument("--cell", help="只跑某一个实验组")
+    p.add_argument("--timeout", type=int, default=300)
+    p.add_argument("--trials", type=int,
+                   help="覆盖每组次数；配合 --budget 让预算来决定实际跑多少")
+    p.set_defaults(fn=cmd_run)
+    sub.add_parser("analyze", help="分析已有结果").set_defaults(fn=cmd_analyze)
+    args = ap.parse_args()
+    if args.cmd == "run" and not args.yes:
+        sys.exit("run 会消耗真实订阅额度。确认请加 --yes，并用 --budget 设上限。\n"
+                 "想先看计划：python3 quota_probe.py plan")
+    return args.fn(args)
+
+if __name__ == "__main__":
+    sys.exit(main())
