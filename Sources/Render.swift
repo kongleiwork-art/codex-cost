@@ -9,6 +9,84 @@ import SwiftUI
 /// 注意：NSVisualEffectView 的背景模糊离屏渲染不出来（它需要真实的窗口后方内容），
 /// 所以这里换成静态的深色渐变底 —— 视觉上接近，且不会渲染成透明。
 enum Renderer {
+
+    /// 社交预览封面 1280×640。GitHub 的 Settings → Social preview 用这个尺寸，
+    /// 链接被贴到 X / Slack / 微信时展开显示的就是它。
+    /// 注意：这张图只能在网页端手工上传，GitHub 没有开放对应的 API。
+    @MainActor
+    static func social(to path: String, panelPNG: String) {
+        let W: CGFloat = 1280, H: CGFloat = 640
+        let panel = NSImage(contentsOfFile: panelPNG)
+
+        let card = ZStack {
+            LinearGradient(colors: [Color(red: 0.07, green: 0.08, blue: 0.10),
+                                    Color(red: 0.02, green: 0.02, blue: 0.03)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            // 右上角一抹冷光，避免整块死黑
+            RadialGradient(colors: [Color(red: 0.30, green: 0.68, blue: 1.0).opacity(0.20),
+                                    .clear],
+                           center: .init(x: 0.82, y: 0.10), startRadius: 10, endRadius: 520)
+
+            HStack(alignment: .center, spacing: 56) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("codex-cost")
+                        .font(.system(size: 62, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Codex quota in your Mac's notch — and what your\ntokens would have cost on another model.")
+                        .font(.system(size: 23, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineSpacing(6)
+                        .padding(.top, 18)
+                    VStack(alignment: .leading, spacing: 11) {
+                        bullet("421 controlled trials behind the cost model",
+                               Color(red: 0.30, green: 0.68, blue: 1.00))
+                        bullet("Native Swift · no dependencies",
+                               Color(red: 0.72, green: 0.44, blue: 1.00))
+                        bullet("Nothing leaves your Mac",
+                               Color(red: 0.36, green: 0.85, blue: 0.52))
+                    }
+                    .padding(.top, 34)
+                }
+                .frame(width: 600, alignment: .leading)
+
+                if let panel {
+                    Image(nsImage: panel)
+                        .resizable().aspectRatio(contentMode: .fit)
+                        .frame(height: 500)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .shadow(color: .black.opacity(0.6), radius: 30, y: 14)
+                }
+            }
+            .padding(.horizontal, 64)
+        }
+        .frame(width: W, height: H)
+        .environment(\.colorScheme, .dark)
+
+        write(card, to: path, scale: 1)
+    }
+
+    @ViewBuilder
+    private static func bullet(_ t: String, _ c: Color) -> some View {
+        HStack(spacing: 11) {
+            Circle().fill(c).frame(width: 9, height: 9)
+            Text(t).font(.system(size: 19)).foregroundStyle(.white.opacity(0.82))
+        }
+    }
+
+    @MainActor
+    private static func write<V: View>(_ v: V, to path: String, scale: CGFloat) {
+        let r = ImageRenderer(content: v)
+        r.scale = scale
+        r.isOpaque = true
+        guard let cg = r.cgImage,
+              let png = NSBitmapImageRep(cgImage: cg)
+                        .representation(using: .png, properties: [:]) else {
+            FileHandle.standardError.write("渲染失败\n".data(using: .utf8)!); exit(1)
+        }
+        try? png.write(to: URL(fileURLWithPath: path))
+        print("已写出 \(path)  \(cg.width)x\(cg.height)")
+    }
+
     @MainActor
     static func run(to path: String, scale: CGFloat = 2) {
         let snap = Budget.compute()

@@ -605,6 +605,15 @@ enum Launcher {
     @MainActor static func main() {
         // --dump 必须在 NSApplication 启动前处理：一旦 app.run() 起来，
         // 这是个常驻 GUI 进程，不会退出（之前误以为是卡死）。
+        // --social <路径>：生成 1280×640 社交预览封面
+        if let i = CommandLine.arguments.firstIndex(of: "--social"),
+           i + 1 < CommandLine.arguments.count {
+            let app = NSApplication.shared
+            app.setActivationPolicy(.prohibited)
+            Renderer.social(to: CommandLine.arguments[i + 1],
+                            panelPNG: "docs/panel-en.png")
+            exit(0)
+        }
         // --render <路径>：离屏出图，不需要屏幕亮着
         if let i = CommandLine.arguments.firstIndex(of: "--render"),
            i + 1 < CommandLine.arguments.count {
