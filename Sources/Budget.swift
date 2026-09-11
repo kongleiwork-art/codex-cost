@@ -11,36 +11,46 @@ enum Budget {
     //
     // 每个模型三个系数：新增输入、输出侧（output+reasoning）、每次请求固定成本。
     // 不能用「单一乘数 × 基准公式」——astra 三个成分相对 sol 分别是
-    // 2.7× / 6× / 5.3×，用一个标量描述会在不同调用构成下飘到 3× ~ 11×。
+    // 约 2.4× / 6× / 6×，用一个标量描述会在不同调用构成下明显漂移。
     //
     // 系数来自受控实验（详见仓库 research/）：
-    //   sol   —— 22 组实验，按次归一化回归 R² 0.987
+    //   sol   —— 全部 481 条试验联合非负拟合（research/refit.py），RMS 0.494
     //   astra —— 纯 astra、未打满窗口的累积回归；输出侧用强制长输出的一组单独定
     //   5.5 / terra —— 只测到整体乘数（±0.11），按比例缩放
     //   luna  —— 30 次调用零消耗
-    // 缓存输入不是免费的，只是便宜约 16 倍。
+    // 缓存输入不是免费的，但也不是早先写的「便宜 16 倍」—— 约 7.7 倍。
     //
-    // 早前的「缓存免费」结论是分析 bug：续会话的实验组记录的是累计 token，
-    // 而分析代码把它当每次增量又求和了一遍，缓存量虚增约 7 倍，除下来就得出
-    // 「170 万 token 才 1%」的假象。专门做的大上下文实验（60 次、Δ=24%、
-    // 缓存占成本 45%、未打满）给出 677,444 tok/1%，并且能同时对上
-    // cache/warm（预测 1.4% / 实测 1%）和一个真实长会话（预测 80.7% / 实测 82%）。
+    // 系数经历了三版：
+    //   ① 「缓存免费」：分析 bug，续会话记累计 token 却被当增量求和，缓存虚增约 7 倍
+    //   ② 677,444：拿 cache/bigctx 单组做残差，其余系数沿用旧值 —— 但那些旧值是在
+    //      缓存按零时拟合的，「每请求成本」里本来就吸收了一部分缓存成本，于是重复计费，
+    //      整体单边高估（24 组平均偏差 +0.85%）
+    //   ③ 现在这版：对全部 481 条试验做联合非负最小二乘（research/refit.py）。sol 的
+    //      RMS 从 1.458 降到 0.494（1% 量化噪声下限 0.289）；24 组验证 MAE 0.66、
+    //      平均偏差 +0.32%；真实 148 次长会话预测 81.9%，实测 82%。
+    //
+    // 仍不确定：sol 的 fresh 与「每请求」此消彼长，待 req/* 实验拆开；
+    // astra 的缓存费率数据定不了（剖面完全平），暂沿用外推值 252,190。
     struct Coef {
         let fresh: Double?      // 每 1% 额度能买多少 fresh 输入 token；nil = 不计费
-        let cached: Double?     // 每 1% 能买多少缓存输入 token（约为 fresh 的 16.4 倍）
+        let cached: Double?     // 每 1% 能买多少缓存输入 token
         let output: Double?
         let request: Double     // 每次请求的固定成本（%）
     }
 
-    // 缓存系数只在 sol 上实测过（677,444）；其余按各自 fresh 的 16.4 倍外推。
+    // 5.5 / terra 与 sol 在现有分辨率下分不出来，按 0.86× / 0.90× 由 sol 缩放。
     static let coef: [String: Coef] = [
-        "gpt-5.6-sol":   Coef(fresh: 41_398, cached: 677_444, output: 15_450, request: 0.0667),
-        "gpt-5.5":       Coef(fresh: 48_137, cached: 787_521, output: 17_965, request: 0.0574),
-        "gpt-5.6-terra": Coef(fresh: 46_000, cached: 752_560, output: 17_167, request: 0.0600),
+        "gpt-5.6-sol":   Coef(fresh: 66_457, cached: 508_494, output: 15_196, request: 0.0819),
+        "gpt-5.5":       Coef(fresh: 77_276, cached: 591_272, output: 17_670, request: 0.0704),
+        "gpt-5.6-terra": Coef(fresh: 73_841, cached: 564_993, output: 16_884, request: 0.0737),
         "gpt-5.6-luna":  Coef(fresh: nil,    cached: nil,     output: nil,    request: 0.0),
-        "gpt-6-astra":   Coef(fresh: 15_415, cached: 252_190, output:  2_495, request: 0.3514),
+        "gpt-6-astra":   Coef(fresh: 27_567, cached: 252_190, output:  2_566, request: 0.4814),
     ]
-    static let fallback = Coef(fresh: 41_398, cached: 677_444, output: 15_450, request: 0.0667)
+    static let fallback = Coef(fresh: 66_457, cached: 508_494, output: 15_196, request: 0.0819)
+    /// 缓存比 fresh 便宜几倍（界面文案用，由系数算出，不写死）
+    static var cacheDiscount: Int {
+        Int(((fallback.cached ?? 0) / (fallback.fresh ?? 1)).rounded())
+    }
     static let windowMinutes5h = 300.0
     static let windowMinutesWeek = 10080.0
 
@@ -60,6 +70,9 @@ enum Budget {
                                                     output: output, requests: requests,
                                                     model: model) }
                       var model: String }
+    /// 主额度之外的独立额度池 —— 周窗口的重置时间与主池不同。
+    /// 例如主周额度打满后 Codex 切去的 gpt-reserve。
+    struct Pool { var label: String; var window: Window; var requests: Int }
     struct Result {
         var windowStart: Date
         var currentModel: String?
@@ -70,6 +83,13 @@ enum Budget {
         var quotaReadAt: Date?
         var firstEvent: Date?
         var lastEvent: Date?
+        var otherPools: [Pool] = []
+
+        /// 真正卡住你的那个窗口：5 小时与周额度里用得更满的那个。
+        /// 周额度打满时，5 小时还剩多少都没用 —— 折叠态、菜单栏和提醒都该看这个。
+        var binding: Window? {
+            [fiveHour, weekly].compactMap { $0 }.max { $0.usedPercent < $1.usedPercent }
+        }
 
         /// 每分钟烧掉多少额度。用窗口内首末事件的跨度算，
         /// 空闲时段不计入 —— 否则挂机一晚上速率会被稀释成 0。
@@ -169,12 +189,18 @@ enum Budget {
         return false
     }
 
+    /// 一条额度读数：来自某个 token_count 事件的 rate_limits
+    fileprivate struct Reading { let ts: Date; let model: String; let windows: [Double: Window] }
+    /// 一次真实请求的用量，附带它自己那条 rate_limits 属于哪个额度池
+    fileprivate struct UsageEvent {
+        let ts: Date; let model: String
+        let fresh: Int; let cached: Int; let output: Int
+        let has5h: Bool; let weeklyReset: Double?
+    }
+
     private static func scan(_ url: URL, since: Date,
-                            into agg: inout [String: ModelUse],
-                            totals: inout (f: Int, c: Int, o: Int, n: Int),
-                            newest: inout (Date, String)?,
-                            span: inout (Date, Date)?,
-                            quota: inout (Date, [Double: Window])?) -> Bool {
+                            events: inout [UsageEvent],
+                            readings: inout [Reading]) -> Bool {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
         var model: String? = nil
         var touched = false
@@ -203,8 +229,8 @@ enum Budget {
                 guard type == "token_count" else { continue }
                 let ts = parseDate(obj["timestamp"] as? String ?? "")
 
-                if let rl = payload["rate_limits"] as? [String: Any], let ts {
-                    var got: [Double: Window] = [:]
+                var got: [Double: Window] = [:]
+                if let rl = payload["rate_limits"] as? [String: Any] {
                     for slot in ["primary", "secondary"] {
                         guard let w = rl[slot] as? [String: Any],
                               let mins = w["window_minutes"] as? Double,
@@ -216,14 +242,14 @@ enum Budget {
                         got[mins] = Window(usedPercent: stale ? 0 : used,
                                            resetsAt: resets, stale: stale)
                     }
-                    if !got.isEmpty, quota == nil || ts > quota!.0 { quota = (ts, got) }
+                }
+                if let ts, !got.isEmpty {
+                    readings.append(Reading(ts: ts, model: model ?? "?", windows: got))
                 }
 
                 guard let ts, ts >= since else { continue }
                 // info 为空的 token_count 不是一次真实请求 —— 会话启动、额度
-                // 刷新都会写这么一条。照计的话每条白加一次「每请求固定成本」，
-                // sol 上是 0.0667%，一个窗口里混进十几条就是约 1% 的虚高。
-                // （rate_limits 已在上面收过了，这里跳过不影响额度读数。）
+                // 刷新都会写这么一条。照计的话每条白加一次「每请求固定成本」。
                 let info = payload["info"] as? [String: Any] ?? [:]
                 guard let u = info["last_token_usage"] as? [String: Any],
                       !u.isEmpty else { continue }
@@ -231,44 +257,102 @@ enum Budget {
                 let cch = u["cached_input_tokens"] as? Int ?? 0
                 let outp = (u["output_tokens"] as? Int ?? 0)
                          + (u["reasoning_output_tokens"] as? Int ?? 0)
-                let fresh = max(0, inp - cch)
-                let key = model ?? "?"
-                var e = agg[key] ?? ModelUse(requests: 0, fresh: 0, cached: 0,
-                                             output: 0, model: key)
-                e.requests += 1; e.fresh += fresh; e.cached += cch; e.output += outp
-                agg[key] = e
-                totals.f += fresh; totals.c += cch; totals.o += outp; totals.n += 1
-                if newest == nil || ts > newest!.0 { newest = (ts, key) }
-                span = (min(span?.0 ?? ts, ts), max(span?.1 ?? ts, ts))
+                events.append(UsageEvent(ts: ts, model: model ?? "?",
+                                         fresh: max(0, inp - cch), cached: cch, output: outp,
+                                         has5h: got[windowMinutes5h] != nil,
+                                         weeklyReset: got[windowMinutesWeek]?.resetsAt))
                 touched = true
             }
         }
         return touched
     }
 
+    /// 两个周窗口是不是同一个桶：按重置时间认，相差一小时以内算同一个
+    private static func sameBucket(_ a: Double?, _ b: Double?) -> Bool {
+        guard let a, let b else { return false }
+        return abs(a - b) < 3600
+    }
+
     /// 当前 5 小时滚动窗口内的用量。
     ///
     /// 是滚动窗口而非到点清零的固定窗口 —— 历史数据里出现过 43 分钟内从 84%
     /// 掉到 0%，固定窗口做不到，滚动窗口在一批集中用量整体过期时可以。
+    ///
+    /// 额度读数要按「桶」分，不能只取时间上最新的一条：主周额度打满后，Codex 会
+    /// 切到 gpt-reserve 这类模型，它的 rate_limits 同样是 limit_id=codex，报的却是
+    /// 另一个周窗口（重置时间不同，也没有 5 小时窗口）。只取最新一条的话，备用池
+    /// 的 36% 会盖掉主池的 100%，5 小时那行也随之消失 —— 恰好在最该准的时候显示错。
     static func compute() -> Result {
         let since = Date().addingTimeInterval(-windowMinutes5h * 60)
+        var events: [UsageEvent] = []
+        var readings: [Reading] = []
+        var sessions = 0
+        for url in sessionFiles() {
+            if scan(url, since: since, events: &events, readings: &readings) { sessions += 1 }
+        }
+        readings.sort { $0.ts < $1.ts }
+
+        // ① 主池：最近一条带 5 小时窗口的读数，与它一起报出的周窗口就是主周额度。
+        //    整段时期都不报 5 小时窗口时（7~8 月就是这样），退回用最新的周读数认主池。
+        let main5 = readings.last(where: { $0.windows[windowMinutes5h] != nil })
+        var mainReset = main5?.windows[windowMinutesWeek]?.resetsAt
+        if mainReset == nil {
+            mainReset = readings.last(where: { $0.windows[windowMinutesWeek] != nil })?
+                .windows[windowMinutesWeek]?.resetsAt
+        }
+        var quota: [Double: Window] = [:]
+        if let w = main5?.windows[windowMinutes5h] { quota[windowMinutes5h] = w }
+        if let wk = readings.last(where: {
+            sameBucket($0.windows[windowMinutesWeek]?.resetsAt, mainReset)
+        })?.windows[windowMinutesWeek] {
+            quota[windowMinutesWeek] = wk
+        }
+
+        // ② 其它池：周窗口的重置时间对不上主池、且还没重置的
+        let now = Date().timeIntervalSince1970
+        var poolWin: [Int: Window] = [:]
+        var poolModels: [Int: Set<String>] = [:]
+        for rd in readings {
+            guard rd.windows[windowMinutes5h] == nil,
+                  let wk = rd.windows[windowMinutesWeek], let ra = wk.resetsAt,
+                  !sameBucket(ra, mainReset), ra > now else { continue }
+            let k = Int(ra / 3600)
+            poolWin[k] = wk
+            poolModels[k, default: []].insert(rd.model)
+        }
+
+        // ③ 用量归属：走独立额度池的请求单独计数，不算进主池的 5 小时估算
         var agg: [String: ModelUse] = [:]
         var totals: (f: Int, c: Int, o: Int, n: Int) = (0, 0, 0, 0)
         var newest: (Date, String)? = nil
         var span: (Date, Date)? = nil
-        var quota: (Date, [Double: Window])? = nil
-        var sessions = 0
-        for url in sessionFiles() {
-            if scan(url, since: since, into: &agg, totals: &totals,
-                    newest: &newest, span: &span, quota: &quota) { sessions += 1 }
+        var poolReq: [Int: Int] = [:]
+        for e in events {
+            if newest == nil || e.ts > newest!.0 { newest = (e.ts, e.model) }
+            if !e.has5h, let ra = e.weeklyReset, !sameBucket(ra, mainReset),
+               poolWin[Int(ra / 3600)] != nil {
+                poolReq[Int(ra / 3600), default: 0] += 1
+                continue
+            }
+            var m = agg[e.model] ?? ModelUse(requests: 0, fresh: 0, cached: 0,
+                                             output: 0, model: e.model)
+            m.requests += 1; m.fresh += e.fresh; m.cached += e.cached; m.output += e.output
+            agg[e.model] = m
+            totals.f += e.fresh; totals.c += e.cached; totals.o += e.output; totals.n += 1
+            span = (min(span?.0 ?? e.ts, e.ts), max(span?.1 ?? e.ts, e.ts))
         }
+
         var r = Result(windowStart: since, currentModel: newest?.1, sessions: sessions)
         r.fresh = totals.f; r.cached = totals.c; r.output = totals.o; r.requests = totals.n
         r.byModel = agg
-        r.quota = quota?.1 ?? [:]
-        r.quotaReadAt = quota?.0
+        r.quota = quota
+        r.quotaReadAt = readings.last?.ts
         r.firstEvent = span?.0
         r.lastEvent = span?.1
+        r.otherPools = poolWin.keys.sorted().map { k in
+            Pool(label: (poolModels[k] ?? []).sorted().joined(separator: "/"),
+                 window: poolWin[k]!, requests: poolReq[k] ?? 0)
+        }
         return r
     }
 }

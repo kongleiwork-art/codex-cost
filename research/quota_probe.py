@@ -75,14 +75,15 @@ def padded(kb):
 BASE_CTX_TOKENS = 20_008
 TOK_PER_UNIT    = 241
 # 一个 padded 单位约 1.06KB，prompt 是作为命令行参数传给 codex 的。
-# 400 单位就是约 420KB，已经贴着 ARG_MAX —— 所以撑大上下文要分几轮喂，
-# 不能一轮塞完（cache/bigctx 一条结果都没落盘，很可能就栽在这里）。
+# 400 单位约 430KB。macOS 的 ARG_MAX 是 1MB，单轮其实塞得下 —— 早前的
+# cache/bigctx 就是一轮塞完跑的，60 条结果都在（当初只是没同步进仓库）。
+# 分几轮喂仍然更稳：离上限远一点，也方便把预热轮单独标记出来。
 MAX_UNITS_PER_TURN = 200
 
 def ctx_seed(target_tokens):
     """返回把上下文撑到约 target_tokens 所需的预热 prompt 列表。
 
-    分多轮喂是必须的：单轮 prompt 太大会撞 ARG_MAX。预热轮记 phase=warmup，
+    分多轮喂不是必须的（1MB 的 ARG_MAX 放得下 430KB），但更稳。预热轮记 phase=warmup，
     分析时不计入测量段，这样"撑上下文烧掉的 fresh"不会污染组间对比。
     """
     units = max(0, round((target_tokens - BASE_CTX_TOKENS) / TOK_PER_UNIT))
@@ -136,10 +137,10 @@ def matrix():
                   why="大上下文持续场景，定缓存费率"))
     # J —— 把「每请求固定成本」和「缓存成本」拆开。
     #
-    # 这是目前最卡的一处。已有实验里 cached 与请求数 r=+0.949，完全共线，
-    # 回归只能给出一族等价解：固定 cached 费率做剖面，从 18 万到「免费」
-    # 整条区间的 RMS 都是 0.36~0.45，而 1% 量化噪声的下限就有 0.29 ——
-    # 换句话说 677,444 这个数，现有数据根本区分不出来。
+    # 在不含 cache/bigctx 的 421 条数据里，cached 与请求数 r=+0.949，缓存费率
+    # 确实定不下来（剖面从 18 万到「免费」RMS 都在 0.36~0.45）。补上 bigctx 那
+    # 60 条后缓存被强识别（去掉这一项 RMS +2.6，最优约 50 万），但 fresh 与
+    # 「每请求」之间仍有此消彼长的余地 —— 这组正是用来把它们拆开的。
     #
     # 破法是让两组的 cached 总量相等、请求数差 4 倍：
     #   req/many  64 次 × 5 万上下文  ≈ 320 万 cached
@@ -154,10 +155,10 @@ def matrix():
                   why="少请求·大上下文；与 req/many 的 cached 总量相同"))
     # K —— 缓存费率到底是不是线性的。
     #
-    # 已提交的实验全部落在「每次约 1.6 万缓存」这一个区间里，而真实长会话是
-    # 每次约 15 万。用实验区间拟合出的系数去预测那条真实会话（148 次、
-    # 2220 万 cached、实测 82%），给出 129% —— 高估 47 个百分点。
-    # 这不是噪声，是「成本线性于 cached」这个形式本身可能就不成立。
+    # 只用 421 条（缺 bigctx）拟合时，预测那条真实会话（148 次、2220 万 cached、
+    # 实测 82%）会给出 128%，看起来像「成本线性于 cached」不成立。补上 bigctx
+    # 后联合拟合给出 79.5%~81.9%，矛盾消失 —— 当时是数据缺了大上下文区间。
+    # 这组仍值得跑：固定请求数、只扫上下文规模，直接检验线性，而不是靠一次对账。
     # 这组固定请求数、只扫上下文规模：线性的话 Δ 应与上下文大小成正比。
     for t in (20, 60, 120, 200):
         C.append(dict(cell=f"ctx/{t}k", prompt=TINY, warmup=ctx_seed(t * 1_000),
@@ -396,7 +397,7 @@ def cmd_run(args):
             resume_id = None
             consecutive_fail = 0
             for i in range(len(warm) + need):
-                # 预热轮：分几次把上下文撑到目标大小（单轮塞完会撞 ARG_MAX）。
+                # 预热轮：分几次把上下文撑到目标大小（离 ARG_MAX 远一点，也便于单独标记）。
                 # 之后每轮只发极短 prompt，fresh 几乎不涨、缓存主导成本。
                 warming = i < len(warm)
                 phase = "warmup" if warming else "measure"

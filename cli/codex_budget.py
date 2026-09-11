@@ -46,15 +46,17 @@ PER_REQUEST   = 0.0667
 # (每 1% 的 fresh token 数, 每 1% 的缓存输入 token 数,
 #  每 1% 的输出侧 token 数, 每次请求成本%)
 #
-# 缓存这一列是补上的：加缓存项那次改动把所有消费方都改成了四元组，
-# 唯独漏了这张表本身，于是 cost_pct() 一被调用就 ValueError ——
-# 只要用户有任何用量，整个 CLI 直接崩。数值与 Sources/Budget.swift 对齐。
+# 与 Sources/Budget.swift 保持一致，来龙去脉见那边的注释。简言之：对全部 481 条
+# 试验做联合非负最小二乘（research/refit.py），sol 的 RMS 从 1.458 降到 0.494。
+# 之前的 677,444 是单组残差、且叠在缓存按零时拟合的旧系数上，重复计费了。
+# 5.5 / terra 与 sol 分不出来，按 0.86× / 0.90× 缩放；astra 的缓存费率不可辨识，
+# 暂沿用外推值。
 COEF = {
-    "gpt-5.6-sol":   (41_398, 677_444, 15_450, 0.0667),
-    "gpt-5.5":       (48_137, 787_521, 17_965, 0.0574),   # 由 0.86× 缩放
-    "gpt-5.6-terra": (46_000, 752_560, 17_167, 0.0600),   # 由 0.90× 缩放
+    "gpt-5.6-sol":   (66_457, 508_494, 15_196, 0.0819),
+    "gpt-5.5":       (77_276, 591_272, 17_670, 0.0704),   # 由 0.86× 缩放
+    "gpt-5.6-terra": (73_841, 564_993, 16_884, 0.0737),   # 由 0.90× 缩放
     "gpt-5.6-luna":  (None,   None,    None,   0.0),      # 不计费
-    "gpt-6-astra":   (15_415, 252_190,  2_495, 0.3514),   # 输出侧见下
+    "gpt-6-astra":   (27_567, 252_190,  2_566, 0.4814),   # 缓存列为外推值
 }
 DEFAULT_COEF = COEF["gpt-5.6-sol"]
 UNCERTAIN = {"gpt-6-astra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"}
@@ -79,7 +81,7 @@ def parse(path):
     out = {"path": path, "model": None, "effort": None, "cwd": None,
            "fresh": 0, "cached": 0, "output": 0, "reasoning": 0,
            "requests": 0, "first": None, "last": None, "quota": {}, "quota_ts": "",
-           "events": []}
+           "events": [], "readings": []}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -111,6 +113,17 @@ def parse(path):
                             "resets_at": sl.get("resets_at")}
             if rl.get("primary") and ts > out["quota_ts"]:
                 out["quota_ts"] = ts
+            # 同时按事件保留完整读数：额度要按「桶」分，见 live_quota()
+            wins = {}
+            for slot in ("primary", "secondary"):
+                sl = rl.get(slot) or {}
+                if sl.get("window_minutes") and sl.get("used_percent") is not None:
+                    wins[sl["window_minutes"]] = {"used_percent": sl["used_percent"],
+                                                  "resets_at": sl.get("resets_at")}
+            if wins and ts:
+                out["readings"].append((ts, out["model"] or "?", wins))
+            has5h = WIN_5H in wins
+            weekly_reset = (wins.get(WIN_WEEK) or {}).get("resets_at")
 
             # info 为空的 token_count 不是一次真实请求（会话启动、额度刷新都会
             # 写这么一条）。照计的话每条白加一次"每请求固定成本" —— sol 上是
@@ -127,6 +140,8 @@ def parse(path):
                 "output": u.get("output_tokens", 0) or 0,
                 "reasoning": u.get("reasoning_output_tokens", 0) or 0,
                 "model": out["model"],
+                "has5h": has5h,
+                "weekly_reset": weekly_reset,
             })
             out["fresh"]     += max(0, inp - cch)
             out["cached"]    += cch
@@ -144,22 +159,54 @@ def recent_files(limit=40):
     return sorted(glob.glob(SESS_GLOB, recursive=True),
                   key=lambda f: os.path.getmtime(f), reverse=True)[:limit]
 
+def _same_bucket(a, b):
+    """两个周窗口是不是同一个桶：按重置时间认，相差一小时以内算同一个。"""
+    return a is not None and b is not None and abs(a - b) < 3600
+
 def live_quota():
-    """最新一次额度读数。日志只在 Codex 发请求时更新，所以要处理两件事：
-    取事件时间戳最大的那条（不是文件 mtime 最新的），以及 resets_at
-    已过期时判定窗口已滚动 —— 否则会把早已重置的窗口读成用满。"""
-    best, best_ts = {}, ""
+    """最新额度读数，按「桶」分。
+
+    不能只取时间上最新的一条：主周额度打满后 Codex 会切到 gpt-reserve 这类
+    模型，它的 rate_limits 同样是 limit_id=codex，报的却是另一个周窗口（重置
+    时间不同、没有 5 小时窗口）。只取最新一条，备用池会盖掉主池。
+
+    返回 (主池 {窗口: 读数}, 读数时间, {桶: 独立池}, 主周窗口的重置时间)。
+    """
+    readings = []
     for f in recent_files(15):
         s = parse(f)
-        if s and s["quota"] and s["quota_ts"] > best_ts:
-            best, best_ts = s["quota"], s["quota_ts"]
+        if s:
+            readings.extend(s["readings"])
+    readings.sort(key=lambda r: r[0])
     now = time.time()
-    for w, v in best.items():
+    main5 = next((r for r in reversed(readings) if WIN_5H in r[2]), None)
+    main_reset = (main5[2].get(WIN_WEEK) or {}).get("resets_at") if main5 else None
+    if main_reset is None:          # 整段时期不报 5 小时窗口时，按最新周读数认主池
+        wk = next((r for r in reversed(readings) if WIN_WEEK in r[2]), None)
+        main_reset = wk[2][WIN_WEEK].get("resets_at") if wk else None
+    quota = {}
+    if main5:
+        quota[WIN_5H] = dict(main5[2][WIN_5H])
+    mw = next((r for r in reversed(readings)
+               if _same_bucket((r[2].get(WIN_WEEK) or {}).get("resets_at"), main_reset)), None)
+    if mw:
+        quota[WIN_WEEK] = dict(mw[2][WIN_WEEK])
+    pools = {}
+    for ts, m, wins in readings:
+        wk = wins.get(WIN_WEEK)
+        ra = (wk or {}).get("resets_at")
+        if not wk or WIN_5H in wins or not ra or ra <= now or _same_bucket(ra, main_reset):
+            continue
+        pool = pools.setdefault(int(ra // 3600), {"models": set(), "window": None})
+        pool["models"].add(m)
+        pool["window"] = dict(wk)
+    for v in quota.values():
         ra = v.get("resets_at")
         if ra and ra < now:
             v["used_percent"] = 0.0
             v["stale"] = True
-    return best, best_ts
+    quota_ts = readings[-1][0] if readings else ""
+    return quota, quota_ts, pools, main_reset
 
 def window_slice(quota=None):
     """当前 5h 窗口的起点 = 现在往前 5 小时。
@@ -171,12 +218,13 @@ def window_slice(quota=None):
     start = time.time() - WIN_5H * 60
     return datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def collect_window(since_iso, limit=60):
+def collect_window(since_iso, limit=60, main_reset=None, pools=None):
     """当前窗口内所有会话的事件，按模型分组。"""
     per_model = {}
     total = {"fresh": 0, "cached": 0, "outside": 0, "requests": 0}
     sessions = set()
     newest = ("", None)          # (时间戳, 模型) —— 用来判断"你现在用的是哪个"
+    pool_req = {}                # 走独立额度池的请求数，不算进主池估算
     for f in recent_files(limit):
         s = parse(f)
         if not s:
@@ -185,6 +233,13 @@ def collect_window(since_iso, limit=60):
             if since_iso and e["ts"] and e["ts"] < since_iso:
                 continue
             m = e["model"] or "?"
+            ra = e.get("weekly_reset")
+            if (pools and not e.get("has5h") and ra and not _same_bucket(ra, main_reset)
+                    and int(ra // 3600) in pools):
+                pool_req[int(ra // 3600)] = pool_req.get(int(ra // 3600), 0) + 1
+                if e["ts"] > newest[0]:
+                    newest = (e["ts"], m)
+                continue
             d = per_model.setdefault(m, {"fresh": 0, "cached": 0, "outside": 0, "requests": 0})
             outside = e["output"] + e["reasoning"]
             for k, v in (("fresh", e["fresh"]), ("cached", e["cached"]),
@@ -194,7 +249,7 @@ def collect_window(since_iso, limit=60):
             sessions.add(f)
             if e["ts"] > newest[0]:
                 newest = (e["ts"], m)
-    return per_model, total, len(sessions), newest[1]
+    return per_model, total, len(sessions), newest[1], pool_req
 
 def bar(pct, width=22):
     fill = int(round(min(100.0, max(0.0, pct)) / 100 * width))
@@ -217,7 +272,8 @@ def fmt_ts(ts):
         return "?"
 
 # ── 报告 ─────────────────────────────────────────────────────────────────
-def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_model=None):
+def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_model=None,
+           pools=None, pool_req=None):
     cost = {m: cost_pct(d["fresh"], d["outside"], d["requests"], m, d["cached"])
             for m, d in per_model.items()}
     spent = sum(cost.values())
@@ -245,7 +301,7 @@ def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_mod
         ):
             print(f"    {name:<8} {c:>6.1f}%  {bar(c/spent*100, 16)}  \033[2m{detail}\033[0m")
     if total["cached"]:
-        print(f"    \033[2m缓存按 fresh 的约 1/16 计价"
+        print(f"    \033[2m缓存按 fresh 的约 1/{round(COEF['gpt-5.6-sol'][1]/COEF['gpt-5.6-sol'][0])} 计价"
               f"（若按 fresh 全价要 {total['cached']/FRESH_PER_PCT:.0f}%）\033[0m")
     if spent and c_req / spent > 0.35 and total["requests"] > 10:
         print(f"    \033[33m⚠ 底价占了 {c_req/spent*100:.0f}%：请求太碎，合并成更少轮次能直接省\033[0m")
@@ -288,6 +344,14 @@ def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_mod
             if mins > 0:
                 left = f"  \033[2m{human_mins(mins)}后重置\033[0m"
         print(f"    {name:<6} {bar(used)} {used:>3.0f}%{left}{tag}")
+    for k, pool in sorted((pools or {}).items()):
+        w = pool["window"]; label = "/".join(sorted(pool["models"]))
+        mins = (w["resets_at"] - time.time()) / 60 if w.get("resets_at") else 0
+        n = (pool_req or {}).get(k, 0)
+        print(f"    {label + ' 周额度':<12} {bar(w['used_percent'])} {w['used_percent']:>3.0f}%"
+              f"  \033[2m{human_mins(mins)}后重置 · 独立额度池\033[0m")
+        if n:
+            print(f"    \033[2m另有 {n} 次请求走 {label} 的独立额度，没算进上面的 5 小时估算\033[0m")
     print()
 
 def main():
@@ -298,9 +362,10 @@ def main():
     ap.add_argument("--version", action="version", version=f"codex-budget {__version__}")
     args = ap.parse_args()
 
-    quota, quota_ts = live_quota()
+    quota, quota_ts, pools, main_reset = live_quota()
     since = window_slice(quota)
-    per_model, total, n_sessions, current_model = collect_window(since, args.files)
+    per_model, total, n_sessions, current_model, pool_req = collect_window(
+        since, args.files, main_reset, pools)
     if not per_model:
         if args.json:
             print(json.dumps({"window_start": since, "requests": 0, "spent_pct": 0.0,
@@ -341,10 +406,13 @@ def main():
                                for m in COEF},
             "quota": {str(k): v for k, v in quota.items()},
             "quota_read_at": quota_ts,
+            "pools": [{"label": "/".join(sorted(v["models"])), "window": v["window"],
+                       "requests": pool_req.get(k, 0)} for k, v in sorted(pools.items())],
         }, ensure_ascii=False, indent=2))
         return 0
 
-    report(per_model, total, n_sessions, quota, quota_ts, since, current_model)
+    report(per_model, total, n_sessions, quota, quota_ts, since, current_model,
+           pools, pool_req)
     return 0
 
 if __name__ == "__main__":

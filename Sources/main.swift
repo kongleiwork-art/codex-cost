@@ -124,7 +124,8 @@ struct Collapsed: View {
     let snap: Snapshot?
     let notchWidth: CGFloat
     var body: some View {
-        let used = snap?.fiveHour?.usedPercent ?? 0
+        // 看更满的那个窗口：周额度打满时 5 小时还剩多少都没用
+        let used = snap?.binding?.usedPercent ?? 0
         HStack(spacing: 0) {
             HStack(spacing: 5) {
                 Dot(c: Palette.quota(used), d: 7)
@@ -240,16 +241,25 @@ struct Expanded: View {
             return p
         }
         StackedBar(parts: parts).padding(.top, 13)
-        HStack(spacing: 10) {
-            legend(L.freshIn, cf, Palette.read)
-            legend(L.cachedIn, cc, Palette.cached)
-            legend(L.modelOut, co, Palette.write)
-            legend(L.reqFloor, cr, Palette.floor)
-            Spacer(minLength: 0)
+        // 四项一行放不下（372pt 宽，名字会被截成"新增…"），排成 2×2
+        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 6) {
+            GridRow {
+                legend(L.freshIn, cf, Palette.read)
+                legend(L.cachedIn, cc, Palette.cached)
+            }
+            GridRow {
+                legend(L.modelOut, co, Palette.write)
+                legend(L.reqFloor, cr, Palette.floor)
+            }
         }
         .padding(.top, 9)
+        ForEach(Array(s.otherPools.filter { $0.requests > 0 }.enumerated()), id: \.offset) { _, p in
+            Text(L.otherPoolNote(p.requests, shortModel(p.label)))
+                .font(.system(size: 9.5)).foregroundStyle(Palette.other.opacity(0.9))
+                .padding(.top, 5)
+        }
         if s.cached > 0 {
-            Text(L.cachedNote(fmtTokens(s.cached), "16"))
+            Text(L.cachedNote(fmtTokens(s.cached), String(Budget.cacheDiscount)))
                 .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.34))
                 .padding(.top, 6)
         }
@@ -282,25 +292,31 @@ struct Expanded: View {
     }
 
     // 额度：标签在左、加粗
+    @ViewBuilder func quotaRow(_ name: String, _ w: Budget.Window) -> some View {
+        HStack(spacing: 11) {
+            Text(name).font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1).fixedSize()
+                .frame(minWidth: 44, alignment: .leading)
+            Meter(value: w.usedPercent, tint: Palette.quota(w.usedPercent))
+            Text("\(Int(w.usedPercent))%")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit().foregroundStyle(.white)
+                .frame(width: 34, alignment: .trailing)
+            Text(fmtLeft(w.resetsAt))
+                .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.34))
+                .frame(width: 42, alignment: .trailing)
+        }
+    }
+
     @ViewBuilder func quota(_ s: Snapshot) -> some View {
         SectionLabel(t: L.quotaSection)
         VStack(spacing: 9) {
-            ForEach([(L.fiveHour, s.fiveHour), (L.weekly, s.weekly)], id: \.0) { name, w in
-                if let w {
-                    HStack(spacing: 11) {
-                        Text(name).font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .frame(width: 44, alignment: .leading)
-                        Meter(value: w.usedPercent, tint: Palette.quota(w.usedPercent))
-                        Text("\(Int(w.usedPercent))%")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .monospacedDigit().foregroundStyle(.white)
-                            .frame(width: 34, alignment: .trailing)
-                        Text(fmtLeft(w.resetsAt))
-                            .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.34))
-                            .frame(width: 42, alignment: .trailing)
-                    }
-                }
+            if let w = s.fiveHour { quotaRow(L.fiveHour, w) }
+            if let w = s.weekly { quotaRow(L.weekly, w) }
+            // 主额度之外的独立额度池（例如主周额度打满后切去的 reserve）
+            ForEach(Array(s.otherPools.enumerated()), id: \.offset) { _, p in
+                quotaRow(L.poolWeekly(shortModel(p.label)), p.window)
             }
         }
         .padding(.top, 10)
@@ -531,6 +547,16 @@ struct Notch {
     }
 }
 
+extension Snapshot {
+    static let baseHeight: CGFloat = 470
+    /// 展开态高度随独立额度池增长：每个池子多一行额度、有请求的再多一行说明。
+    /// 固定 470 的话，多出来的内容会把顶部的模型和总数挤出窗口。
+    var expandedHeight: CGFloat {
+        Self.baseHeight + CGFloat(otherPools.count) * 24
+            + CGFloat(otherPools.filter { $0.requests > 0 }.count) * 18
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NotchWindow!
@@ -541,11 +567,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return NSSize(width: (n.width > 0 ? n.width : 180) + 124, height: n.height)
     }
     var expandedSize: NSSize {
-        let n = Notch(screen: window?.screen ?? NSScreen.main ?? NSScreen.screens[0])
-        return NSSize(width: 372, height: 470)
+        NSSize(width: 372, height: store?.snap?.expandedHeight ?? Snapshot.baseHeight)
     }
 
     var statusBar: StatusBarController?
+    var expandedNow = CommandLine.arguments.contains("--expanded")
 
     func applicationDidFinishLaunching(_ note: Notification) {
         store = Store()
@@ -570,8 +596,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         notchWidth: n0.width > 0 ? n0.width : 180,
                         onResize: { [weak self] expanded in
             guard let self else { return }
+            self.expandedNow = expanded
             self.place(expanded ? self.expandedSize : self.collapsedSize, animated: true)
         })
+        // 展开着的时候出现或消失一个独立额度池，窗口高度要跟着变
+        store.onUpdate = { [weak self] in
+            guard let self, self.expandedNow,
+                  self.window.frame.height != self.expandedSize.height else { return }
+            self.place(self.expandedSize, animated: true)
+        }
         let host = NSHostingView(rootView: root)
         host.autoresizingMask = [.width, .height]
         window.contentView = host
@@ -646,6 +679,11 @@ enum Launcher {
                 print(String(format: "quota %.0f  %.0f%%", w, q.usedPercent)
                       + (q.stale ? " (已重置)" : ""))
             }
+            for p in r.otherPools {
+                print("pool  \(p.label)  " + String(format: "%.0f%%", p.window.usedPercent)
+                      + "  \(p.requests) 次请求")
+            }
+            if let b = r.binding { print(String(format: "binding %.0f%%", b.usedPercent)) }
             exit(0)
         }
         let app = NSApplication.shared

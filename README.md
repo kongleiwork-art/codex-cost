@@ -23,8 +23,8 @@ two questions that actually change what you do next:
 - **What is that spend made of** — new input, output, or the per-request floor?
 - **What would the same work have cost on a different model?**
 
-The second one needs a cost model. Getting one took **421 controlled API calls
-across 23 experiment cells**, changing one variable at a time. The raw trials and
+The second one needs a cost model. Getting one took **481 controlled API calls
+across 26 experiment cells**, changing one variable at a time. The raw trials and
 the harness are in [`research/`](research/).
 
 ## Install
@@ -52,41 +52,43 @@ package manager, no account, no API key.
 
 ## What the measurements showed
 
-**Cached input is cheap, not free — about 16× cheaper than fresh.** One percent
-of the five-hour window buys ~41K fresh input tokens or ~677K cached ones. This
-matters more than it sounds: a long session carrying 150K of context across 148
-turns spends roughly a third of its quota on cached input alone. *Still don't
-clear context to save quota* — rebuilding it costs full fresh price, which is
-16× worse. But a very long session is not free either.
+**Cached input is cheap, not free — roughly 8× cheaper than fresh.** One percent
+of the five-hour window buys ~66K fresh input tokens or ~510K cached ones. That
+gap is why long sessions still add up: one real session carrying ~150K of
+context across 148 turns spent about half of its quota on cached input alone.
+*Still don't clear context to save quota* — rebuilding it costs full fresh
+price, about 8× worse. But a very long session is not free either.
 
-**Every request has a floor.** ~0.0667% on Sol regardless of size, so roughly 15
-requests consume 1% of the five-hour window even when almost nothing comes back.
-Redundant tool loops are expensive even when they're tiny.
+**Every request has a floor.** ~0.08% on Sol regardless of size, so roughly a
+dozen requests consume 1% of the five-hour window even when almost nothing comes
+back. Redundant tool loops are expensive even when they're tiny.
 
 **Effort is not charged at a premium — on Sol.** Higher effort costs more only
 because it emits more reasoning tokens; across five levels the multiplier stayed
 at 1.0 ± 0.1. In practice Sol at max effort still undercuts Astra at low effort,
 so **turn the effort dial up before reaching for a bigger model.**
 
-**Astra needs three numbers, not one.** Its input, output and request-floor
-components sit at different multiples of Sol's, so any single "Astra is N×"
-figure drifts between 3× and 11× depending purely on how much the model talks.
-Short, decisive Astra work is affordable; long reasoning chains on it are not.
+**Astra needs more than one number.** Relative to Sol its fresh input costs
+~2.4×, while its output and per-request floor cost ~6×, so any single "Astra is
+N×" figure shifts with how much the model talks. Short, decisive Astra work is
+affordable; long reasoning chains on it are not.
 
 ## Measured coefficients
 
-Each model gets three coefficients instead of one multiplier:
+Each model gets four coefficients instead of one multiplier:
 
 | Model | New input per 1% | Cached input per 1% | Output + reasoning per 1% | Per request |
 |---|---:|---:|---:|---:|
-| `gpt-5.6-sol` | 41,398 tok | 677,444 tok | 15,450 tok | 0.0667% |
-| `gpt-5.5` | 48,137 tok | 787,521 tok | 17,965 tok | 0.0574% |
-| `gpt-5.6-terra` | 46,000 tok | 752,560 tok | 17,167 tok | 0.0600% |
+| `gpt-5.6-sol` | 66,457 tok | 508,494 tok | 15,196 tok | 0.0819% |
+| `gpt-5.5` | 77,276 tok | 591,272 tok | 17,670 tok | 0.0704% |
+| `gpt-5.6-terra` | 73,841 tok | 564,993 tok | 16,884 tok | 0.0737% |
 | `gpt-5.6-luna` | free | free | free | free |
-| `gpt-6-astra` | 15,415 tok | 252,190 tok | 2,495 tok | 0.3514% |
+| `gpt-6-astra` | 27,567 tok | 252,190 tok\* | 2,566 tok | 0.4814% |
 
-Cached rates are measured on Sol and extrapolated to the others at the same 16.4×
-ratio.
+Sol's four are fitted jointly on all 481 trials with non-negative least squares
+([`research/refit.py`](research/refit.py)). 5.5 and Terra are indistinguishable
+from Sol at this resolution and are scaled from it. \*Astra's cached rate cannot
+be identified from the current data and is held at an extrapolated value.
 
 <details>
 <summary><b>How this was measured, and where it's shaky</b></summary>
@@ -97,7 +99,9 @@ These numbers are only worth something if you know their error bars.
 
 **Reliability, by model**
 
-- **Sol is solid** — 22 cells, R² 0.987 on a per-call regression.
+- **Sol is solid** — a joint fit over 94 regression points, RMS 0.49 against a
+  0.29 rounding floor, leave-one-out 0.53. Its fresh-vs-per-request split still
+  trades off; a dedicated experiment (`req/*`) is queued to pin it.
 - **5.5 and Terra are indistinguishable from Sol** at this resolution. Their
   error bars overlap; treat all three as ≈1×.
 - **Astra and Luna rest on ~30–40 calls each.** Read them as order-of-magnitude.
@@ -126,23 +130,31 @@ These numbers are only worth something if you know their error bars.
   to 0% in 43 minutes appears in the data; a fixed window cannot do that, a
   rolling one can when a burst ages out together.
 
-**How the cached rate was pinned down, after getting it wrong twice**
+**How the cached rate was pinned down — three versions**
 
-The first answer was "cached input is free," and it was wrong — the result of an
-analysis bug, not bad data. Resumed-session cells record *cumulative* token
-counts, and the analysis summed them across trials, inflating cached volume ~7×.
-Dividing that inflated number by the observed Δ made cache look free.
+1. **"Cached input is free."** Wrong, and wrong in the analysis rather than the
+   data: resumed-session cells record *cumulative* token counts, and the analysis
+   summed them across trials, inflating cached volume ~7×.
+2. **677,444 tok/1%**, from a purpose-built cell — a 400KB seed, then 60
+   one-word turns, Δ=24% — solved as a residual against the existing
+   coefficients. Better, but those coefficients had been fitted with cached at
+   zero, so the per-request term already absorbed part of the cache cost. Adding
+   a cached term on top double-counted it: every cell came out over-estimated,
+   by +0.85% on average.
+3. **508,494 tok/1%**, from refitting all four coefficients jointly on all 481
+   trials. Across 24 cells: MAE 0.87% → 0.66%, mean bias +0.85% → +0.32%.
 
-A purpose-built cell settled it: seed a session with a 400KB pad, then send 60
-one-word turns so fresh input stays flat while cached volume grows linearly.
-Δ reached 24% with cache accounting for 45% of the cost — well clear of the
-rounding floor. The resulting 677,444 tok/1% reconciles all three datasets:
+|  | v2 | v3 (current) | observed |
+|---|---:|---:|---:|
+| `cache/warm` cell | 1.4% | 1.6% | 1% |
+| `cache/bigctx` cell | 24.0% | 25.2% | 24% |
+| a real 148-request session | 80.7% | 81.9% | 82% |
 
-| | predicted | observed |
-|---|---:|---:|
-| `cache/warm` cell | 1.4% | 1% |
-| `cache/bigctx` cell | 24.0% | 24% |
-| a real 148-request session | 80.7% | 82% |
+Version 3 came out of a second, independent pass over the data
+([#1](https://github.com/kongleiwork-art/codex-cost/pull/1)). That pass ran on the
+repo's copy of the trials, which was missing the 60 `cache/bigctx` rows — so it
+concluded the cached rate was unidentifiable. With those rows restored, cached is
+strongly identified: forcing it to zero raises the fit error from 0.49 to 3.11.
 
 **Scope:** one account, Plus plan, September 2026. Metering can change — the
 harness has a `control` cell for re-checking.
@@ -177,7 +189,7 @@ uploaded. The panel shows aggregate numbers only — no prompts, no file content
 ```
 Sources/     the app — Swift, no dependencies
 cli/         the same cost model as a terminal tool
-research/    the experiment harness and all 421 raw trials
+research/    the experiment harness and all 481 raw trials
 docs/        rendered screenshots
 ```
 

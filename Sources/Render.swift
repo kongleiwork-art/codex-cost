@@ -38,7 +38,7 @@ enum Renderer {
                         .lineSpacing(6)
                         .padding(.top, 18)
                     VStack(alignment: .leading, spacing: 11) {
-                        bullet("421 controlled trials behind the cost model",
+                        bullet("481 controlled trials behind the cost model",
                                Color(red: 0.30, green: 0.68, blue: 1.00))
                         bullet("Native Swift · no dependencies",
                                Color(red: 0.72, green: 0.44, blue: 1.00))
@@ -91,7 +91,7 @@ enum Renderer {
     static func run(to path: String, scale: CGFloat = 2) {
         let snap = Budget.compute()
 
-        let size = CGSize(width: 372, height: 470)
+        let size = CGSize(width: 372, height: snap.expandedHeight)
         let content = ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(LinearGradient(colors: [Color(white: 0.13), Color(white: 0.03)],

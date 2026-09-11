@@ -34,7 +34,7 @@ final class Alerts {
     /// 返回 true 表示这次刷新触发了提醒（UI 可以据此做视觉强调）。
     @discardableResult
     func check(_ r: Budget.Result) -> Bool {
-        guard let w = r.fiveHour, !w.stale else { return false }
+        guard let w = r.binding, !w.stale else { return false }   // 周额度打满也要提醒
         // 用 resets_at 标识窗口：窗口一滚动，已触发记录自动作废
         let key = String(format: "%.0f", w.resetsAt ?? 0)
         var done = fired[key] ?? []
@@ -73,7 +73,8 @@ final class Alerts {
         }
         guard Self.canNotify, authorized else { return }
         let c = UNMutableNotificationContent()
-        c.title = L.alertTitle(threshold)
+        c.title = L.alertTitle(threshold,
+                               weekly: (r.weekly?.usedPercent ?? -1) > (r.fiveHour?.usedPercent ?? -1))
         c.body = body
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "quota-\(threshold)-\(Date().timeIntervalSince1970)",

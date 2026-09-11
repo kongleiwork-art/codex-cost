@@ -44,6 +44,12 @@ enum L {
     static var altSection     : String { s("换成单一模型的话", "If it had all run on one model") }
     static var fiveHour       : String { s("5 小时", "5 hours") }
     static var weekly         : String { s("每周", "Weekly") }
+    /// 独立额度池（周窗口重置时间与主池不同）的行标签，例如「reserve 周额度」
+    static func poolWeekly(_ m: String) -> String { s("\(m) 周额度", "\(m) weekly") }
+    static func otherPoolNote(_ n: Int, _ m: String) -> String {
+        s("另有 \(n) 次请求走 \(m) 的独立额度，没算进上面的 5 小时",
+          "\(n) more requests drew on \(m)'s separate quota, not counted above")
+    }
     static func times(_ n: Int) -> String { s("\(n) 次", "\(n)×") }
     static var current        : String { s("当前", "now") }
     // 底栏 / 菜单
@@ -58,8 +64,9 @@ enum L {
     static var resetIn        : String { s("后重置", "left") }
     static var resetDone      : String { s("已重置", "reset") }
     // 提醒
-    static func alertTitle(_ p: Int) -> String {
-        s("5 小时额度已用 \(p)%", "\(p)% of your 5-hour quota is gone")
+    static func alertTitle(_ p: Int, weekly: Bool = false) -> String {
+        weekly ? s("周额度已用 \(p)%", "\(p)% of your weekly quota is gone")
+               : s("5 小时额度已用 \(p)%", "\(p)% of your 5-hour quota is gone")
     }
     static func alertBody(_ mins: String, _ model: String) -> String {
         s("按当前速率约 \(mins) 后撞上限。当前模型 \(model)。",

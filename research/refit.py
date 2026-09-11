@@ -4,23 +4,25 @@
 quota_probe.py 负责**采集**，这个脚本负责**核对**：把已有的实验数据重算一遍，
 回答「仓库里现在这套系数，跟自己的数据对得上吗」。
 
-跑出来的结论（截至 421 条记录）：
+跑出来的结论（481 条记录，含 cache/bigctx）：
 
-  1. 对不上，而且是单边高估。sol 上当前系数的 RMS 是 1.48，重拟合能到 0.36；
-     astra 是 1.60 对 0.55。主因是「每请求固定成本」偏高 —— 即使把 cached
-     费率钉死在 677,444，最佳的 request 系数也只有 0.048，不是 0.0667。
+  1. 旧系数对不上，而且是单边高估：sol 上 RMS 1.458，联合重拟合 0.494（1% 量化
+     噪声下限 0.289）。原因是缓存项是后加的、其余系数没重拟合 —— 「每请求成本」
+     和缓存共线，旧的 0.0667 里本来就吸收了一部分缓存成本，再加一项等于重复计费。
 
-  2. cached 费率在这批数据里**不可辨识**。固定它做剖面，从 18 万到「完全免费」
-     整条区间的 RMS 都在 0.36~0.45，而 1% 量化噪声的下限就有 0.29。
-     原因是 cached 与请求数共线（r=+0.949）—— 每次请求都拖着一份上下文，
-     「缓存贵」和「每请求贵」在这批数据里是同一个信号。
+  2. 缓存费率在完整数据里**测得动**：去掉这一项 RMS 从 0.494 升到 3.107，剖面最优
+     在 50 万附近（677,444 时已升到 0.911）。只看不含 bigctx 的 421 条会得出
+     「不可辨识」—— 那批实验全在每次约 1.6 万缓存的小区间里。
 
-  3. 更麻烦的是两个区间互相矛盾。已提交的实验全在「每次约 1.6 万缓存」，
-     而 README 引用的真实长会话是「每次约 15 万」。用前者拟合的系数预测后者，
-     高估约 47 个百分点 —— 说明「成本线性于 cached」这个形式本身就可疑。
+  3. 同理，只用 421 条拟合去预测真实长会话会高估到 128%，像是线性形式不成立；补上
+     bigctx 后是 79.5%，实测 82%。矛盾来自数据缺区间，不是形式错了。
 
-  破法见 quota_probe.py 里的 req/* 和 ctx/* 两组实验：前者让 cached 总量相等
-  而请求数差 4 倍，直接分离出每请求成本；后者固定请求数扫上下文规模，测线性。
+  4. astra 的缓存费率在现有数据里确实不可辨识（剖面 0.547~0.548 完全平），需要一组
+     astra 的大上下文实验。
+
+  仍未拆干净的是 sol 的 fresh 与「每请求」—— 剖面上两者此消彼长。quota_probe.py 里的
+  req/* 让缓存总量相等而请求数差 4 倍，正是为此设计；ctx/* 固定请求数扫上下文规模，
+  直接检验缓存是否线性。
 
 用法：
     python3 refit.py              # 全部核对
@@ -37,10 +39,10 @@ WIN_5H = "300"
 
 # 仓库当前在用的系数（Sources/Budget.swift / cli/codex_budget.py）
 SHIPPED = {
-    "gpt-5.6-sol":   (41_398, 677_444, 15_450, 0.0667),
-    "gpt-5.5":       (48_137, 787_521, 17_965, 0.0574),
-    "gpt-5.6-terra": (46_000, 752_560, 17_167, 0.0600),
-    "gpt-6-astra":   (15_415, 252_190,  2_495, 0.3514),
+    "gpt-5.6-sol":   (66_457, 508_494, 15_196, 0.0819),
+    "gpt-5.5":       (77_276, 591_272, 17_670, 0.0704),
+    "gpt-5.6-terra": (73_841, 564_993, 16_884, 0.0737),
+    "gpt-6-astra":   (27_567, 252_190,  2_566, 0.4814),
     "gpt-5.6-luna":  None,
 }
 # used_percent 只有 1% 分辨率。均匀量化误差的标准差是 1/sqrt(12)，
@@ -204,10 +206,13 @@ def fmt_rate(v):
 # ── 各节报告 ──────────────────────────────────────────────────────────────
 def section_bursts(inc, rows):
     print("\n【1】按 burst 汇总：观测 Δ vs 当前系数")
-    print("    burst = 连续的一段实验（间隔 >1 小时就断开）。混合模型的段跳过。")
+    print("    burst = 连续的一段实验（间隔 >1 小时或额度读数回落就断开）。混合模型的段跳过。")
     bursts, cur = [], []
     for x in inc:
-        if cur and (x["t"] - cur[-1]["t"]).total_seconds() > 3600:
+        # 额度读数回落 = 窗口重置。跨重置的一段，max−min 会漏掉重置后的消耗，
+        # 而请求数照算 —— 汇总表会凭空显示成「高估」。astra/clean 就踩过。
+        if cur and ((x["t"] - cur[-1]["t"]).total_seconds() > 3600
+                    or x["p"] < cur[-1]["p"]):
             bursts.append(cur); cur = []
         cur.append(x)
     if cur:
@@ -345,34 +350,38 @@ def section_profile(A, y, model):
 
 
 def section_regime(inc, A, y):
-    """已提交实验 vs README 引用的真实长会话 —— 两个区间对不上。"""
-    print("\n【4】区间冲突：实验区间 vs 真实长会话")
+    """已提交实验 vs 真实长会话 —— 检验两个区间能否用同一套系数描述。"""
+    print("\n【4】区间检验：实验区间 vs 真实长会话")
     sol = [x for x in inc if x["model"] == "gpt-5.6-sol"]
     per_req = sum(x["c"] for x in sol) / max(1, len(sol))
     print(f"\n    已提交的 sol 实验：{len(sol)} 次请求，平均每次 {per_req:,.0f} 缓存 token")
 
-    # README 的三个数：当前系数预测 80.7%、缓存按免费算 47.9%、实测 82%。
-    # 两者之差就是缓存项，据此反推那条会话的缓存总量。
-    pred_now, pred_free, observed, reqs = 80.7, 47.9, 82.0, 148
-    cached_tot = (pred_now - pred_free) * SHIPPED["gpt-5.6-sol"][1]
-    print(f"    README 引用的真实会话：{reqs} 次请求，反推缓存约 "
-          f"{cached_tot/1e6:.1f}M token，每次约 {cached_tot/reqs:,.0f}")
-    print(f"    → 两者相差 {cached_tot/reqs/per_req:.0f} 倍，实验根本没覆盖到那个区间。")
+    # 这条会话的原始 rollout 不在仓库里，但总量是直接从本机日志统计的
+    # （148 次请求，5h 读数 0% → 82%，全程 sol，未跨重置）。之前是用 README 里
+    # 两个预测值之差反推缓存总量，系数一换就推错 —— 曾推成 16.7M，真实是 22.3M。
+    fresh_tot, cached_tot, out_tot, reqs, observed = 1_329_467, 22_266_112, 90_817, 148, 82.0
+    sh = SHIPPED["gpt-5.6-sol"]
+    pred_now = fresh_tot / sh[0] + cached_tot / sh[1] + out_tot / sh[2] + sh[3] * reqs
+    print(f"    真实长会话：{reqs} 次请求，缓存 {cached_tot/1e6:.1f}M token，"
+          f"每次约 {cached_tot/reqs:,.0f}")
+    print(f"    → 两者相差 {cached_tot/reqs/per_req:.0f} 倍，（这是全部 sol 实验的平均；有没有覆盖到，要看是否跑了大上下文组。）")
 
     got = nnls(A, y, [0, 1, 2, 3])
     if not got:
         return
     x = got[0]
-    # 非缓存部分按当前系数算出来是 pred_free 减掉每请求项，再按新费率折算
-    fo_now = pred_free - SHIPPED["gpt-5.6-sol"][3] * reqs
-    fo_new = fo_now * (SHIPPED["gpt-5.6-sol"][0] * x[0])   # 粗略按 fresh 费率缩放
-    pred_refit = cached_tot * x[1] + fo_new + x[3] * reqs
+    # x 依次是 fresh / cached / output / 每请求 的「每单位百分比」
+    pred_refit = fresh_tot * x[0] + cached_tot * x[1] + out_tot * x[2] + reqs * x[3]
     print(f"\n    {'':<22}{'预测':>8}{'实测':>8}")
     print(f"    {'当前系数':<22}{pred_now:>8.1f}{observed:>8.1f}")
     print(f"    {'按实验数据重拟合':<22}{pred_refit:>8.1f}{observed:>8.1f}"
-          f"   高估 {pred_refit - observed:.0f} 个百分点")
-    print("\n    同一个线性形式没法同时拟合两个区间 —— 这是形式错了，不是噪声。")
-    print("    （那条真实会话的原始 rollout 不在仓库里，以上由 README 的三个数反推。）")
+          f"   偏差 {pred_refit - observed:+.0f} 个百分点")
+    # 结论要跟着数字走，不能写死
+    if abs(pred_refit - observed) > max(5.0, observed * 0.1):
+        print("\n    重拟合的系数对不上这条会话 —— 要么实验缺了这个区间，要么线性形式不成立。")
+    else:
+        print("\n    重拟合的系数能对上这条会话 —— 线性形式在这个区间内站得住。")
+    print("    （那条真实会话的原始 rollout 不在仓库里，总量取自本机日志统计。）")
 
 
 def section_gaps(rows):

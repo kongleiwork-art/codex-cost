@@ -26,7 +26,7 @@ final class StatusBarController {
 
     func render() {
         guard let b = item.button else { return }
-        let used = store.snap?.fiveHour?.usedPercent ?? 0
+        let used = store.snap?.binding?.usedPercent ?? 0   // 看更满的那个窗口
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         b.image = NSImage(systemSymbolName: symbol(for: used),
                           accessibilityDescription: nil)?
