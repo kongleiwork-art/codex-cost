@@ -69,6 +69,30 @@ def padded(kb):
             "Ignore the reference material entirely. Reply with exactly the "
             "word OK. Do not use any tools.")
 
+# padded() 的换算，实测自 results.jsonl：TINY 空跑是 20,008 个 input token
+# （系统提示 + 工具定义），padded(kb) 每个 kb 单位再加 241 个。
+# input/1k→20,253、input/20k→24,832、input/80k→39,292，三点都落在这条直线上。
+BASE_CTX_TOKENS = 20_008
+TOK_PER_UNIT    = 241
+# 一个 padded 单位约 1.06KB，prompt 是作为命令行参数传给 codex 的。
+# 400 单位就是约 420KB，已经贴着 ARG_MAX —— 所以撑大上下文要分几轮喂，
+# 不能一轮塞完（cache/bigctx 一条结果都没落盘，很可能就栽在这里）。
+MAX_UNITS_PER_TURN = 200
+
+def ctx_seed(target_tokens):
+    """返回把上下文撑到约 target_tokens 所需的预热 prompt 列表。
+
+    分多轮喂是必须的：单轮 prompt 太大会撞 ARG_MAX。预热轮记 phase=warmup，
+    分析时不计入测量段，这样"撑上下文烧掉的 fresh"不会污染组间对比。
+    """
+    units = max(0, round((target_tokens - BASE_CTX_TOKENS) / TOK_PER_UNIT))
+    out = []
+    while units > 0:
+        n = min(units, MAX_UNITS_PER_TURN)
+        out.append(padded(n))
+        units -= n
+    return out
+
 def matrix():
     C = []
     # 对照组：隔天/隔周续跑时先重测它。若换算率和上次不一致，
@@ -103,12 +127,42 @@ def matrix():
     # I —— 缓存到底收不收费。
     # 真实使用中发现反例：148 次请求、每轮扛约 15 万上下文的会话实测 82%，
     # 模型（缓存按零计价）只算 48%，缺口约对应 29 万缓存 token/1%。
-    # 而 cache/warm 那组（上下文最多 26 万）给的是 170 万 tok/1%，差 6 倍。
-    # 这组专测大上下文持续场景：首轮塞 400KB 把上下文撑到十几万，
+    # （注意 cache/warm 那组曾被读成"上下文 26 万"，那是累计求和的假象 ——
+    #  它每轮真实上下文只有约 2 万，根本没进大上下文区间。）
+    # 这组专测大上下文持续场景：分几轮把上下文撑到约 15 万，
     # 之后每轮只发一个字，fresh 几乎不涨，缓存量线性累积。
-    C.append(dict(cell="cache/bigctx", prompt=TINY, seed=padded(400), _tiny=TINY,
+    C.append(dict(cell="cache/bigctx", prompt=TINY, warmup=ctx_seed(150_000),
                   model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=60,
                   why="大上下文持续场景，定缓存费率"))
+    # J —— 把「每请求固定成本」和「缓存成本」拆开。
+    #
+    # 这是目前最卡的一处。已有实验里 cached 与请求数 r=+0.949，完全共线，
+    # 回归只能给出一族等价解：固定 cached 费率做剖面，从 18 万到「免费」
+    # 整条区间的 RMS 都是 0.36~0.45，而 1% 量化噪声的下限就有 0.29 ——
+    # 换句话说 677,444 这个数，现有数据根本区分不出来。
+    #
+    # 破法是让两组的 cached 总量相等、请求数差 4 倍：
+    #   req/many  64 次 × 5 万上下文  ≈ 320 万 cached
+    #   req/few   16 次 × 20 万上下文 ≈ 320 万 cached
+    # 若每请求真有 0.0667% 的固定成本，两组 Δ 应差约 3.2%；若没有，应当相等。
+    # 预热轮不计入测量，两组撑上下文的 fresh（5 万 vs 18 万）因此不参与对比。
+    C.append(dict(cell="req/many", prompt=TINY, warmup=ctx_seed(50_000),
+                  model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=64,
+                  why="多请求·小上下文；与 req/few 的 cached 总量相同"))
+    C.append(dict(cell="req/few", prompt=TINY, warmup=ctx_seed(200_000),
+                  model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=16,
+                  why="少请求·大上下文；与 req/many 的 cached 总量相同"))
+    # K —— 缓存费率到底是不是线性的。
+    #
+    # 已提交的实验全部落在「每次约 1.6 万缓存」这一个区间里，而真实长会话是
+    # 每次约 15 万。用实验区间拟合出的系数去预测那条真实会话（148 次、
+    # 2220 万 cached、实测 82%），给出 129% —— 高估 47 个百分点。
+    # 这不是噪声，是「成本线性于 cached」这个形式本身可能就不成立。
+    # 这组固定请求数、只扫上下文规模：线性的话 Δ 应与上下文大小成正比。
+    for t in (20, 60, 120, 200):
+        C.append(dict(cell=f"ctx/{t}k", prompt=TINY, warmup=ctx_seed(t * 1_000),
+                      model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=20,
+                      why=f"固定 20 次请求，上下文约 {t} 千 token"))
     # H —— 纯 astra + 强制大量输出：把输出侧系数单独测准。
     # 之前那个 461 tok/1%（"贵 34 倍"）是在两个已打满窗口上做残差得来的，
     # 误差叠加且是下界。这一组让输出占成本的 ~80%，且 55% 就停不打满。
@@ -268,10 +322,14 @@ def cmd_plan(args):
     print("-" * 82)
     total = 0
     for c in cells:
-        total += c["trials"]
-        print(f"{c['cell']:<20} {c['model']:<14} {c['effort']:<8} {c['trials']:>4}  {c['why']}")
+        warm = len(c.get("warmup") or [])
+        total += c["trials"] + warm
+        n = f"{c['trials']}+{warm}" if warm else str(c["trials"])
+        print(f"{c['cell']:<20} {c['model']:<14} {c['effort']:<8} {n:>6}  {c['why']}")
     print("-" * 82)
-    print(f"合计 {total} 次调用，{len(cells)} 个实验组\n")
+    print(f"合计 {total} 次调用，{len(cells)} 个实验组（次数列 a+b 表示 a 次测量 + b 轮预热）\n")
+    print("注意：req/* 和 ctx/* 是大上下文组，很贵 —— 按当前系数两组各约 10~20%，"
+          "若缓存实际更贵还会更高。\n建议用 --cell 一组一组跑，并用 --budget 卡住。\n")
     print("成对对比（每一对只差一个变量，这是能解开共线性的原因）：")
     print("  cache/cold  vs cache/warm    → 缓存 token 是否真的更便宜")
     print("  effort/low..xhigh            → reasoning effort 的额度权重")
@@ -292,6 +350,8 @@ def load_done():
                 continue
             if not r.get("ok"):
                 continue          # 失败不计入，否则重跑会跳过整组
+            if r.get("phase", "measure") != "measure":
+                continue          # 预热轮不算进度（老记录没有 phase，按测量轮算）
             done[r["cell"]] = done.get(r["cell"], 0) + 1
     return done
 
@@ -330,31 +390,39 @@ def cmd_run(args):
             if need <= 0:
                 print(f"[跳过] {c['cell']} 已完成 {done[c['cell']]} 次")
                 continue
-            print(f"[{c['cell']}] 还需 {need} 次 …")
+            warm = c.get("warmup") or []
+            print(f"[{c['cell']}] 还需 {need} 次"
+                  + (f"（另有 {len(warm)} 轮预热，不计入）" if warm else "") + " …")
             resume_id = None
             consecutive_fail = 0
-            for i in range(need):
-                # seed：仅第一轮用，用来一次性建立大上下文；
-                # 之后每轮只发极短 prompt，让 fresh 几乎不涨、缓存主导成本
-                if c.get("seed") and i == 0:
-                    c = dict(c, prompt=c["seed"])
-                elif c.get("seed") and i == 1:
-                    c = dict(c, prompt=c["_tiny"])
+            for i in range(len(warm) + need):
+                # 预热轮：分几次把上下文撑到目标大小（单轮塞完会撞 ARG_MAX）。
+                # 之后每轮只发极短 prompt，fresh 几乎不涨、缓存主导成本。
+                warming = i < len(warm)
+                phase = "warmup" if warming else "measure"
+                trial = dict(c, prompt=warm[i]) if warming else c
                 cur = current_quota()
                 used = cur.get(WIN_5H, {}).get("used_percent", start_pct) - start_pct
                 if used >= args.budget:
                     print(f"\n已达预算上限（+{used:.0f}%），停止。续跑直接重新执行本命令。")
                     return 0
-                r = run_trial(codex, c, workdir, timeout=args.timeout,
+                r = run_trial(codex, trial, workdir, timeout=args.timeout,
                               resume_id=resume_id if c.get("resume") else None)
                 if c.get("resume") and not resume_id and r.get("session_id"):
                     resume_id = r["session_id"]      # 之后每次都续这一个会话
+                if warming and not r["ok"]:
+                    print(f"\n预热轮失败，这组的上下文没建起来，跳过整组：\n"
+                          f"  {r.get('error','')[:300]}")
+                    break
                 rec = {"cell": c["cell"], "model": c["model"], "effort": c["effort"],
-                       "resume": bool(c.get("resume")), "trial": done.get(c["cell"], 0) + i + 1,
+                       "resume": bool(c.get("resume")), "phase": phase,
+                       "trial": 0 if warming
+                                else done.get(c["cell"], 0) + i - len(warm) + 1,
                        **r}
                 out.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 out.flush()
-                if (c["cell"].startswith("effort/") and r["ok"] and i == 0
+                if (c["cell"].startswith("effort/") and r["ok"] and not warming
+                        and i == len(warm)
                         and not (r.get("tokens") or {}).get("reasoning_output_tokens")):
                     print("\n这个 prompt 没有触发推理（reasoning_output_tokens=0），"
                           "effort 组测不出任何东西。换更难的任务再跑，别浪费额度。")
@@ -365,7 +433,8 @@ def cmd_run(args):
                     return 1
                 t = r.get("tokens") or {}
                 fresh = t.get("input_tokens", 0) - t.get("cached_input_tokens", 0)
-                print(f"   #{rec['trial']:<2} {'ok ' if r['ok'] else 'ERR'} "
+                print(f"   {('预热' if warming else '#' + str(rec['trial'])):<4}"
+                      f"{'ok ' if r['ok'] else 'ERR'} "
                       f"fresh_in {fresh:>7,}  cached {t.get('cached_input_tokens',0):>8,}  "
                       f"out {t.get('output_tokens',0):>6,}  "
                       f"5h {fmt_quota(r.get('quota') or {})}  {r['elapsed_s']}s"

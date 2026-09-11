@@ -220,8 +220,13 @@ enum Budget {
                 }
 
                 guard let ts, ts >= since else { continue }
+                // info 为空的 token_count 不是一次真实请求 —— 会话启动、额度
+                // 刷新都会写这么一条。照计的话每条白加一次「每请求固定成本」，
+                // sol 上是 0.0667%，一个窗口里混进十几条就是约 1% 的虚高。
+                // （rate_limits 已在上面收过了，这里跳过不影响额度读数。）
                 let info = payload["info"] as? [String: Any] ?? [:]
-                let u = info["last_token_usage"] as? [String: Any] ?? [:]
+                guard let u = info["last_token_usage"] as? [String: Any],
+                      !u.isEmpty else { continue }
                 let inp = u["input_tokens"] as? Int ?? 0
                 let cch = u["cached_input_tokens"] as? Int ?? 0
                 let outp = (u["output_tokens"] as? Int ?? 0)

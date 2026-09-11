@@ -43,13 +43,18 @@ FRESH_PER_PCT = 41_398      # sol 基准：1% 额度能买多少 fresh 输入 to
 OUT_PER_PCT   = 15_450
 PER_REQUEST   = 0.0667
 
-# (每 1% 的 fresh token 数, 每 1% 的输出侧 token 数, 每次请求成本%)
+# (每 1% 的 fresh token 数, 每 1% 的缓存输入 token 数,
+#  每 1% 的输出侧 token 数, 每次请求成本%)
+#
+# 缓存这一列是补上的：加缓存项那次改动把所有消费方都改成了四元组，
+# 唯独漏了这张表本身，于是 cost_pct() 一被调用就 ValueError ——
+# 只要用户有任何用量，整个 CLI 直接崩。数值与 Sources/Budget.swift 对齐。
 COEF = {
-    "gpt-5.6-sol":   (41_398, 15_450, 0.0667),
-    "gpt-5.5":       (48_137, 17_965, 0.0574),   # 由 0.86× 缩放
-    "gpt-5.6-terra": (46_000, 17_167, 0.0600),   # 由 0.90× 缩放
-    "gpt-5.6-luna":  (None,   None,   0.0),      # 不计费
-    "gpt-6-astra":   (15_415,  2_495, 0.3514),   # 输出侧见下
+    "gpt-5.6-sol":   (41_398, 677_444, 15_450, 0.0667),
+    "gpt-5.5":       (48_137, 787_521, 17_965, 0.0574),   # 由 0.86× 缩放
+    "gpt-5.6-terra": (46_000, 752_560, 17_167, 0.0600),   # 由 0.90× 缩放
+    "gpt-5.6-luna":  (None,   None,    None,   0.0),      # 不计费
+    "gpt-6-astra":   (15_415, 252_190,  2_495, 0.3514),   # 输出侧见下
 }
 DEFAULT_COEF = COEF["gpt-5.6-sol"]
 UNCERTAIN = {"gpt-6-astra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"}
@@ -62,9 +67,11 @@ def cost_pct(fresh, outside, requests, model, cached=0):
 
 def effective_mult(model):
     """相对 sol 的等效倍数只在给定构成下才有意义，这里给个粗略参考。"""
-    f, o, r = COEF.get(model, DEFAULT_COEF)
+    f, _ca, o, r = COEF.get(model, DEFAULT_COEF)
     if f is None:
         return 0.0
+    # 故意不含缓存项：这里只想给个「同样一次调用大概贵几倍」的粗略参考，
+    # 而缓存占比完全取决于会话有多长，放进来反而会让这个数更没有意义。
     return (8000 / f + 500 / o + r) / (8000 / 41_398 + 500 / 15_450 + 0.0667)
 
 # ── 日志解析 ─────────────────────────────────────────────────────────────
@@ -92,7 +99,25 @@ def parse(path):
             cm = (p.get("collaboration_mode") or {}).get("settings") or {}
             out["effort"] = cm.get("reasoning_effort") or out["effort"]
         elif t == "token_count":
+            # 额度读数要先收，且与有没有用量无关 —— 只带 rate_limits 的事件
+            # 往往正是最新的一条读数，丢了它会把额度读成陈旧值。
+            rl = p.get("rate_limits") or {}
+            for slot in ("primary", "secondary"):
+                sl = rl.get(slot) or {}
+                if sl.get("window_minutes") and sl.get("used_percent") is not None:
+                    if ts >= out["quota_ts"]:
+                        out["quota"][sl["window_minutes"]] = {
+                            "used_percent": sl["used_percent"],
+                            "resets_at": sl.get("resets_at")}
+            if rl.get("primary") and ts > out["quota_ts"]:
+                out["quota_ts"] = ts
+
+            # info 为空的 token_count 不是一次真实请求（会话启动、额度刷新都会
+            # 写这么一条）。照计的话每条白加一次"每请求固定成本" —— sol 上是
+            # 0.0667%，一个 5h 窗口里混进十几条就是约 1% 的虚高。
             u = (p.get("info") or {}).get("last_token_usage") or {}
+            if not u:
+                continue
             inp = u.get("input_tokens", 0) or 0
             cch = u.get("cached_input_tokens", 0) or 0
             out["events"].append({
@@ -111,18 +136,9 @@ def parse(path):
             if ts:
                 out["first"] = out["first"] or ts
                 out["last"] = ts
-            rl = p.get("rate_limits") or {}
-            for slot in ("primary", "secondary"):
-                s = rl.get(slot) or {}
-                if s.get("window_minutes") and s.get("used_percent") is not None:
-                    if ts >= out["quota_ts"]:
-                        out["quota"][s["window_minutes"]] = {
-                            "used_percent": s["used_percent"],
-                            "resets_at": s.get("resets_at")}
-            if rl.get("primary") and ts > out["quota_ts"]:
-                out["quota_ts"] = ts
     fh.close()
-    return out if out["requests"] else None
+    # 只有额度读数、没有用量的文件也要留下 —— live_quota() 要用
+    return out if (out["requests"] or out["quota"]) else None
 
 def recent_files(limit=40):
     return sorted(glob.glob(SESS_GLOB, recursive=True),
@@ -307,6 +323,8 @@ def main():
             "by_component": {
                 "fresh": sum(d["fresh"] / (COEF.get(m, DEFAULT_COEF)[0] or 1e18)
                              for m, d in per_model.items()),
+                "cached": sum(d["cached"] / (COEF.get(m, DEFAULT_COEF)[1] or 1e18)
+                              for m, d in per_model.items()),
                 "output": sum(d["outside"] / (COEF.get(m, DEFAULT_COEF)[2] or 1e18)
                               for m, d in per_model.items()),
                 "requests": sum(COEF.get(m, DEFAULT_COEF)[3] * d["requests"]
