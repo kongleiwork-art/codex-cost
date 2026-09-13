@@ -145,7 +145,7 @@ def matrix():
     # 破法是让两组的 cached 总量相等、请求数差 4 倍：
     #   req/many  64 次 × 5 万上下文  ≈ 320 万 cached
     #   req/few   16 次 × 20 万上下文 ≈ 320 万 cached
-    # 若每请求真有 0.0667% 的固定成本，两组 Δ 应差约 3.2%；若没有，应当相等。
+    # 若每请求真有 v3 的 0.0819% 固定成本，两组 Δ 应差约 3.9%（48 × 0.0819）；若没有，应当相等。
     # 预热轮不计入测量，两组撑上下文的 fresh（5 万 vs 18 万）因此不参与对比。
     C.append(dict(cell="req/many", prompt=TINY, warmup=ctx_seed(50_000),
                   model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=64,
@@ -164,6 +164,19 @@ def matrix():
         C.append(dict(cell=f"ctx/{t}k", prompt=TINY, warmup=ctx_seed(t * 1_000),
                       model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=20,
                       why=f"固定 20 次请求，上下文约 {t} 千 token"))
+    # L —— astra 的缓存费率。
+    #
+    # 现有 astra 数据（clean / verbose / effort / model）每次上下文都在 2 万上下，
+    # cached 与请求数几乎同步增长，剖面上缓存费率完全平（RMS 0.547~0.548），
+    # 仓库里的 252,190 只是按 sol 的比例外推的。这组把上下文撑到约 12 万，
+    # 请求形态与 astra/clean 一样（TINY、medium）：两边只差每次多出的约 10 万 cached，
+    # 每请求成本在联合拟合里相消，缓存费率就能单独定下来。
+    # 按现行系数每次约 0.5%（缓存）+ 0.48%（每请求），20 次约 19%，
+    # 预热的 10 万 fresh 再约 3.6%。astra 上一次缓存未命中就是 12 万 fresh ≈ 4%，
+    # 所以别在额度紧的窗口里跑。
+    C.append(dict(cell="astra/bigctx", prompt=TINY, warmup=ctx_seed(120_000),
+                  model="gpt-6-astra", effort=BASE_EFFORT, resume=True, trials=20,
+                  why="纯 astra、大上下文，定 astra 的缓存费率"))
     # H —— 纯 astra + 强制大量输出：把输出侧系数单独测准。
     # 之前那个 461 tok/1%（"贵 34 倍"）是在两个已打满窗口上做残差得来的，
     # 误差叠加且是下界。这一组让输出占成本的 ~80%，且 55% 就停不打满。
@@ -346,7 +359,7 @@ def cmd_plan(args):
         print(f"{c['cell']:<20} {c['model']:<14} {c['effort']:<8} {n:>6}  {c['why']}")
     print("-" * 82)
     print(f"合计 {total} 次调用，{len(cells)} 个实验组（次数列 a+b 表示 a 次测量 + b 轮预热）\n")
-    print("注意：req/* 和 ctx/* 是大上下文组，很贵 —— 按当前系数两组各约 10~20%，"
+    print("注意：req/*、ctx/* 和 astra/bigctx 是大上下文组，很贵 —— 按当前系数每组约 10~25%，"
           "若缓存实际更贵还会更高。\n建议用 --cell 一组一组跑，并用 --budget 卡住。\n")
     print("成对对比（每一对只差一个变量，这是能解开共线性的原因）：")
     print("  cache/cold  vs cache/warm    → 缓存 token 是否真的更便宜")
