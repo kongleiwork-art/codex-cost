@@ -91,7 +91,7 @@ enum Renderer {
     static func run(to path: String, scale: CGFloat = 2) {
         let snap = Budget.compute()
 
-        let size = CGSize(width: 372, height: snap.expandedHeight)
+        let size = CGSize(width: Expanded.width, height: Expanded.fittingHeight(snap))
         let content = ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(LinearGradient(colors: [Color(white: 0.13), Color(white: 0.03)],

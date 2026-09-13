@@ -5,11 +5,12 @@
   · 这笔花费是怎么构成的（新输入 / 输出 / 每请求底价）
   · 同样这些活，换成别的模型要花多少 —— 反事实计算
 
-成本模型来自受控实验（22 组、约 300 次调用、R² 0.987）：
+成本模型来自受控实验（481 次调用、26 组，research/refit.py 联合拟合）：
 
-    Δ5h% = M(模型) × [ fresh_input/41,398 + 输出侧/15,450 + 0.0667 × 请求数 ]
+    Δ5h% = fresh_input/F + cached_input/C + 输出侧/O + R × 请求数
 
-其中「输出侧」= output + reasoning，缓存输入完全不计费。
+每个模型一组 (F, C, O, R)；「输出侧」= output + reasoning。缓存输入不是
+免费的，只是便宜：sol 上约为 fresh 的 1/8。
 
 零依赖，标准库，Python 3.8+。只读本地日志，不上传任何数据。
 """
@@ -19,29 +20,15 @@ from datetime import datetime, timezone
 
 __version__ = "0.1.0"
 HOME = os.path.expanduser("~")
-SESS_GLOB = os.path.join(HOME, ".codex/sessions/**/rollout-*.jsonl")
+# 与 Codex 自己一致：设了 CODEX_HOME 就用它，否则 ~/.codex
+CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex"))
+SESS_GLOB = os.path.join(CODEX_HOME, "sessions/**/rollout-*.jsonl")
 WIN_5H, WIN_WEEK = 300, 10080
 
 # ── 成本模型 ─────────────────────────────────────────────────────────────
-# 每个模型三个系数：新增输入、输出侧（output+reasoning）、每次请求的固定成本。
-#
-# 为什么不能用「一个乘数乘以基准公式」：astra 的三个成分相对 sol 分别是
-# 2.7× / 34× / 5.3× —— 差一个数量级。用单一乘数时，等效倍数完全取决于
-# 调用的构成（说话多不多），实测在 3.45× 到 11× 之间飘，怎么都对不上。
-#
-# 数据来源：
-#   sol   —— 22 组受控实验，按次归一化回归 R² 0.987
-#   astra —— fresh/请求 来自 41 次纯 astra、未打满窗口的累积回归；
-#            输出侧来自 25 次纯 astra + 强制长输出、未打满（输出占成本 46%，
-#            敏感性区间 2,100~3,072）。
-#            注：早前用两个"已打满"窗口做残差得到 461 tok/1%（"贵 34 倍"），
-#            与干净测量差 5 倍。那两个窗口跑的是 astra 各 effort 档位 ——
-#            怀疑 effort 在 astra 上有独立乘数（sol 上没有），未验证。
-#   5.5 / terra —— 只测到整体乘数，误差 ±0.11，按比例缩放 sol 的系数
-#   luna  —— 30 次调用零消耗
-FRESH_PER_PCT = 41_398      # sol 基准：1% 额度能买多少 fresh 输入 token
-OUT_PER_PCT   = 15_450
-PER_REQUEST   = 0.0667
+# 为什么每个模型各一组系数、而不是「一个乘数乘以基准公式」：astra 各成分相对
+# sol 的倍数差了一个数量级（fresh ~2.4×、输出 ~6×、每请求 ~6×），单一乘数下
+# 等效倍数完全取决于调用的构成，怎么都对不上。
 
 # (每 1% 的 fresh token 数, 每 1% 的缓存输入 token 数,
 #  每 1% 的输出侧 token 数, 每次请求成本%)
@@ -297,12 +284,12 @@ def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_mod
             ("新读进来的内容", c_fresh, f"{total['fresh']:,} tok"),
             ("缓存输入",     c_cached, f"{total['cached']:,} tok"),
             ("模型写出来的",   c_out,   f"{total['outside']:,} tok"),
-            ("每次请求的底价", c_req,   f"{total['requests']} 次 × 0.067%"),
+            ("每次请求的底价", c_req,   f"{total['requests']} 次 × {c_req/max(1, total['requests']):.3f}%"),
         ):
             print(f"    {name:<8} {c:>6.1f}%  {bar(c/spent*100, 16)}  \033[2m{detail}\033[0m")
     if total["cached"]:
         print(f"    \033[2m缓存按 fresh 的约 1/{round(COEF['gpt-5.6-sol'][1]/COEF['gpt-5.6-sol'][0])} 计价"
-              f"（若按 fresh 全价要 {total['cached']/FRESH_PER_PCT:.0f}%）\033[0m")
+              f"（若按 fresh 全价要 {total['cached']/COEF['gpt-5.6-sol'][0]:.0f}%）\033[0m")
     if spent and c_req / spent > 0.35 and total["requests"] > 10:
         print(f"    \033[33m⚠ 底价占了 {c_req/spent*100:.0f}%：请求太碎，合并成更少轮次能直接省\033[0m")
 
@@ -368,8 +355,12 @@ def main():
         since, args.files, main_reset, pools)
     if not per_model:
         if args.json:
-            print(json.dumps({"window_start": since, "requests": 0, "spent_pct": 0.0,
-                              "quota": {str(k): v for k, v in quota.items()}},
+            print(json.dumps({"window_start": since, "current_model": None,
+                              "requests": 0, "spent_pct": 0.0,
+                              "quota": {str(k): v for k, v in quota.items()},
+                              "pools": [{"label": "/".join(sorted(v["models"])),
+                                         "window": v["window"], "requests": 0}
+                                        for k, v in sorted(pools.items())]},
                              ensure_ascii=False, indent=2))
         else:
             print("\n  当前窗口还没有任何活动。\n")

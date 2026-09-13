@@ -547,13 +547,20 @@ struct Notch {
     }
 }
 
-extension Snapshot {
-    static let baseHeight: CGFloat = 470
-    /// 展开态高度随独立额度池增长：每个池子多一行额度、有请求的再多一行说明。
-    /// 固定 470 的话，多出来的内容会把顶部的模型和总数挤出窗口。
-    var expandedHeight: CGFloat {
-        Self.baseHeight + CGFloat(otherPools.count) * 24
-            + CGFloat(otherPools.filter { $0.requests > 0 }.count) * 18
+extension Expanded {
+    static let width: CGFloat = 372
+    /// 展开态需要的真实高度：按固定宽度把面板排一遍版量出来。
+    ///
+    /// 不能写死或按行数估：独立额度池、池子说明、估算偏差提示都是可有可无的行，
+    /// 少算一行，内容就会把顶部的模型和总数挤出窗口。
+    @MainActor
+    static func fittingHeight(_ snap: Snapshot?, error: String? = nil) -> CGFloat {
+        let host = NSHostingController(rootView:
+            Expanded(snap: snap, error: error, lastRefresh: Date()) {}
+                .frame(width: width))
+        let h = host.sizeThatFits(in: CGSize(width: width, height: 4000)).height
+        // 量出来接近上限说明有纵向可伸缩的内容，量不准 —— 退回旧的固定高度
+        return h > 3900 ? 470 : ceil(h)
     }
 }
 
@@ -567,7 +574,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return NSSize(width: (n.width > 0 ? n.width : 180) + 124, height: n.height)
     }
     var expandedSize: NSSize {
-        NSSize(width: 372, height: store?.snap?.expandedHeight ?? Snapshot.baseHeight)
+        NSSize(width: Expanded.width,
+               height: Expanded.fittingHeight(store?.snap, error: store?.error))
     }
 
     var statusBar: StatusBarController?
@@ -650,8 +658,12 @@ enum Launcher {
            i + 1 < CommandLine.arguments.count {
             let app = NSApplication.shared
             app.setActivationPolicy(.prohibited)
-            Renderer.social(to: CommandLine.arguments[i + 1],
-                            panelPNG: "docs/panel-en.png")
+            // --social <输出> [面板 PNG]：面板图默认取 docs/panel-en.png，
+            // docs/render.sh 会传刚渲染好的那张，免得拼进旧图
+            let args = CommandLine.arguments
+            let panel = i + 2 < args.count && !args[i + 2].hasPrefix("--")
+                ? args[i + 2] : "docs/panel-en.png"
+            Renderer.social(to: args[i + 1], panelPNG: panel)
             exit(0)
         }
         // --render <路径>：离屏出图，不需要屏幕亮着
@@ -663,6 +675,34 @@ enum Launcher {
         }
         if CommandLine.arguments.contains("--dump") {
             let r = Budget.compute()
+            // --dump --json：机器可读，回归测试拿它和 CLI 的 --json 对账
+            if CommandLine.arguments.contains("--json") {
+                func win(_ w: Budget.Window) -> [String: Any] {
+                    ["used_percent": w.usedPercent, "resets_at": w.resetsAt ?? NSNull(),
+                     "stale": w.stale]
+                }
+                var quota: [String: Any] = [:]
+                for (k, w) in r.quota { quota[String(Int(k))] = win(w) }
+                var models: [String: Any] = [:]
+                for (k, v) in r.byModel {
+                    models[k] = ["requests": v.requests, "pct": v.pct] as [String: Any]
+                }
+                let obj: [String: Any] = [
+                    "requests": r.requests, "fresh": r.fresh, "cached": r.cached,
+                    "output": r.output, "spent": r.spent,
+                    "current_model": r.currentModel ?? NSNull(),
+                    "by_model": models, "quota": quota,
+                    "pools": r.otherPools.map {
+                        ["label": $0.label, "requests": $0.requests,
+                         "window": win($0.window)] as [String: Any]
+                    },
+                    "binding": r.binding.map { $0.usedPercent as Any } ?? NSNull(),
+                ]
+                let data = try! JSONSerialization.data(withJSONObject: obj,
+                                                       options: [.sortedKeys, .prettyPrinted])
+                print(String(data: data, encoding: .utf8)!)
+                exit(0)
+            }
             print("requests   \(r.requests)")
             print("fresh      \(r.fresh)")
             print("cached     \(r.cached)")

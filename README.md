@@ -189,8 +189,9 @@ uploaded. The panel shows aggregate numbers only — no prompts, no file content
 ```
 Sources/     the app — Swift, no dependencies
 cli/         the same cost model as a terminal tool
+tests/       fixture logs + regression tests for the app and the CLI
 research/    the experiment harness and all 481 raw trials
-docs/        rendered screenshots
+docs/        screenshots, regenerated from fixtures by docs/render.sh
 ```
 
 ## Contributing
@@ -198,6 +199,15 @@ docs/        rendered screenshots
 Measurements from other plans and accounts are the most useful thing you could
 contribute — the coefficients here come from a single Plus account. Run
 `research/quota_probe.py` and open an issue with the output.
+
+Changing the log parser or the cost model? Run the tests first. They feed the
+same fixture logs to the app and the CLI (both honor `CODEX_HOME`) and check
+the expected numbers and that the two implementations agree — including the
+case where the weekly quota is exhausted and Codex moves to a separate pool:
+
+```bash
+./build.sh && python3 tests/test_quota.py
+```
 
 ## License
 

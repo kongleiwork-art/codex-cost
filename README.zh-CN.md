@@ -140,13 +140,22 @@ README 里的截图就是 `--render` 出的，可以随时用真实数据重新�
 ```
 Sources/     应用本体，Swift，零依赖
 cli/         同一套成本模型的命令行版
+tests/       固定样本日志 + app 与 CLI 的回归测试
 research/    实验框架和全部 481 次原始试验
-docs/        渲染出的截图
+docs/        截图，由 docs/render.sh 从固定样本生成
 ```
 
 ## 参与
 
 **最有价值的贡献是来自其它套餐和账号的实测数据** —— 现在这套系数只来自一个 Plus 账号。跑一下 `research/quota_probe.py`，把结果开个 issue 贴上来就行。
+
+改日志解析或成本模型之前先跑测试。它把同一批固定样本日志喂给 app 和 CLI（两边都认
+`CODEX_HOME`），既核对期望值，也核对两份实现互相一致 —— 包括周额度打满、Codex 切到
+独立额度池的情况：
+
+```bash
+./build.sh && python3 tests/test_quota.py
+```
 
 ## License
 

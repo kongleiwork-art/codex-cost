@@ -149,8 +149,12 @@ enum Budget {
     /// 不能只挑「窗口内修改过」的：额度读数要从最新的一条记录里取，而那条
     /// 记录可能早于窗口（比如你几小时没用 Codex）。窗口过滤只作用于用量累加。
     private static func sessionFiles(limit: Int = 40) -> [URL] {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions")
+        // 与 Codex 自己一致：设了 CODEX_HOME 就用它，否则 ~/.codex。
+        // 从 Finder / open 启动的 app 看不到 shell 里的变量，这主要给命令行和测试用。
+        let home = ProcessInfo.processInfo.environment["CODEX_HOME"]
+            .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        let root = home.appendingPathComponent("sessions")
         guard let en = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]) else { return [] }
