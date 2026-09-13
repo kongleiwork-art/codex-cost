@@ -436,8 +436,68 @@ def section_pairs(inc, model="gpt-5.6-sol"):
     print(f"    每请求成本 ≈ {r_hat:.3f}%（量化误差 ±{band:.3f}），现行 {R}")
 
 
+def section_ctx(inc, model="gpt-5.6-sol"):
+    """ctx/*：请求数固定、只扫上下文规模，检验缓存成本是否线性。
+
+    线性的话，扣掉 fresh 和输出之后的「每次请求成本」应当是一条直线：
+        每请求% = 平均上下文 / C + R
+    四组各自反推出的 C（每 1% 能买的缓存 token）应当一致。fresh 费率本身还有
+    争议（v3 的 66K 与新拟合的约 38K），两种都算，看结论是否依赖它。
+    与 req/* 一样按读数滞后一次对齐：第 1..n 次的读数差对应前 n−1 次的 token。
+    """
+    print("\n【6】ctx/*：缓存成本是否与上下文大小成正比")
+    O = SHIPPED[model][2]
+    pts = []
+    for cell in ("ctx/20k", "ctx/60k", "ctx/120k", "ctx/200k"):
+        xs = sorted((x for x in inc if x["cell"] == cell), key=lambda x: x["t"])
+        if len(xs) < 6:
+            if xs:
+                print(f"    {cell:<10} 可用 {len(xs)} 次，不够")
+            continue
+        if any(b["p"] < a["p"] for a, b in zip(xs, xs[1:])):
+            print(f"    {cell:<10} 读数中途回落（窗口滚动），这组不能直接用")
+            continue
+        seg = xs[:-1]
+        n = len(seg)
+        f, c, o = (sum(x[k] for x in seg) for k in "fco")
+        pts.append((cell, n, c / n, f, o, xs[-1]["p"] - xs[0]["p"]))
+    if not pts:
+        print("    还没有数据")
+        return
+    print(f"    {'组':<10}{'请求':>4}{'平均上下文':>11}{'fresh':>9}{'实测Δ':>6}"
+          f"   C（fresh 按 38K）   C（fresh 按 {SHIPPED[model][0]:,}）")
+    for cell, n, ctx, f, o, dp in pts:
+        cs = []
+        for fr in (38_000, SHIPPED[model][0]):
+            y = (dp - f / fr - o / O) / n
+            cs.append(f"{ctx / y:>12,.0f}" if y > 0 else f"{'—':>12}")
+        print(f"    {cell:<10}{n:>4}{ctx:>11,.0f}{f:>9,}{dp:>6.0f}      {cs[0]}        {cs[1]}")
+    if len(pts) < 3:
+        print("    至少三组才能判断是不是直线")
+        return
+    # 按请求数加权的直线拟合：每请求% = a × 平均上下文 + b
+    ws = [n for _, n, *_ in pts]
+    xs_ = [ctx for _, _, ctx, *_ in pts]
+    ys_ = [(dp - f / 38_000 - o / O) / n for _, n, _, f, o, dp in pts]
+    W = sum(ws)
+    mx = sum(w * x for w, x in zip(ws, xs_)) / W
+    my = sum(w * y for w, y in zip(ws, ys_)) / W
+    sxx = sum(w * (x - mx) ** 2 for w, x in zip(ws, xs_))
+    a = sum(w * (x - mx) * (y - my) for w, x, y in zip(ws, xs_, ys_)) / sxx
+    b = my - a * mx
+    print(f"\n    直线拟合（fresh 按 38K）：每 1% ≈ {1 / a:,.0f} 缓存 token，每请求固定 {b:+.3f}%")
+    worst = 0.0
+    for (cell, n, ctx, *_), y in zip(pts, ys_):
+        r = y - (a * ctx + b)
+        band = 1 / n
+        worst = max(worst, abs(r) / band)
+        print(f"      {cell:<10} 偏离直线 {r:+.3f}%/次   量化误差 ±{band:.3f}")
+    print("    " + ("各组都落在量化误差内 —— 线性站得住" if worst <= 1
+                    else f"最大偏离是量化误差的 {worst:.1f} 倍 —— 不像直线"))
+
+
 def section_gaps(rows):
-    print("\n【6】数据覆盖")
+    print("\n【7】数据覆盖")
     cells = collections.Counter(r["cell"] for r in rows
                                 if r.get("ok") and r.get("phase", "measure") == "measure")
     for cell, note in (("cache/bigctx", "定缓存费率"),
@@ -477,6 +537,7 @@ def main():
             section_profile(A, y, model)
             section_regime(inc, A, y)
     section_pairs(inc)
+    section_ctx(inc)
     section_gaps(rows)
     print()
     return 0
