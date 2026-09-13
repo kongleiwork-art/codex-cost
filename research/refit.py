@@ -4,25 +4,23 @@
 quota_probe.py 负责**采集**，这个脚本负责**核对**：把已有的实验数据重算一遍，
 回答「仓库里现在这套系数，跟自己的数据对得上吗」。
 
-跑出来的结论（481 条记录，含 cache/bigctx）：
+跑出来的结论（654 条记录、641 次测量，含 req/* 与 ctx/*）：
 
-  1. 旧系数对不上，而且是单边高估：sol 上 RMS 1.458，联合重拟合 0.494（1% 量化
-     噪声下限 0.289）。原因是缓存项是后加的、其余系数没重拟合 —— 「每请求成本」
-     和缓存共线，旧的 0.0667 里本来就吸收了一部分缓存成本，再加一项等于重复计费。
+  1. 旧数据里「每请求固定成本」被高估了约 2.5 倍。那批实验每次请求都顺带几千到两万
+     fresh，两者同涨同落。req/*（缓存总量相同、请求数差 4 倍）直接解出每请求约 0
+     （−0.012% ± 0.042），联合拟合给 0.033%；fresh 相应从 66,457 变为 42,500 tok/1%。
 
-  2. 缓存费率在完整数据里**测得动**：去掉这一项 RMS 从 0.494 升到 3.107，剖面最优
-     在 50 万附近（677,444 时已升到 0.911）。只看不含 bigctx 的 421 条会得出
-     「不可辨识」—— 那批实验全在每次约 1.6 万缓存的小区间里。
+  2. 缓存成本与上下文大小成正比：ctx/* 固定 20 次请求、上下文 2 万~20 万，四组都落在
+     量化误差内的一条直线上。缓存测得动（去掉这一项 RMS 0.84 → 3.18）。
 
-  3. 同理，只用 421 条拟合去预测真实长会话会高估到 128%，像是线性形式不成立；补上
-     bigctx 后是 79.5%，实测 82%。矛盾来自数据缺区间，不是形式错了。
+  3. 读数滞后一次：第 k 次请求带回的读数只含前 k−1 次的费用。按滞后对齐，
+     sol / astra 的 RMS 都更低。
 
-  4. astra 的缓存费率在现有数据里确实不可辨识（剖面 0.547~0.548 完全平），需要一组
-     astra 的大上下文实验。
+  4. 仍未对上：真实 148 次长会话预测 88%，实测 82%（上一版 81.9%）；ctx/200k 两版都
+     算低。单看 ctx/* 缓存约 35 万 tok/1%，单看 09-10 的 cache/bigctx 约 50 万。
 
-  仍未拆干净的是 sol 的 fresh 与「每请求」—— 剖面上两者此消彼长。quota_probe.py 里的
-  req/* 让缓存总量相等而请求数差 4 倍，正是为此设计；ctx/* 固定请求数扫上下文规模，
-  直接检验缓存是否线性。
+  5. astra 的缓存费率仍不可辨识（剖面完全平），暂按 sol 的缓存/fresh 比例设定；
+     astra/bigctx 这组就是为它准备的，尚未运行。
 
 用法：
     python3 refit.py              # 全部核对
@@ -39,10 +37,10 @@ WIN_5H = "300"
 
 # 仓库当前在用的系数（Sources/Budget.swift / cli/codex_budget.py）
 SHIPPED = {
-    "gpt-5.6-sol":   (66_457, 508_494, 15_196, 0.0819),
-    "gpt-5.5":       (77_276, 591_272, 17_670, 0.0704),
-    "gpt-5.6-terra": (73_841, 564_993, 16_884, 0.0737),
-    "gpt-6-astra":   (27_567, 252_190,  2_566, 0.4814),
+    "gpt-5.6-sol":   (42_500, 492_537, 13_572, 0.0328),
+    "gpt-5.5":       (49_419, 572_717, 15_782, 0.0282),
+    "gpt-5.6-terra": (47_223, 547_263, 15_080, 0.0295),
+    "gpt-6-astra":   (14_545, 168_559,  2_364, 0.2615),
     "gpt-5.6-luna":  None,
 }
 # used_percent 只有 1% 分辨率。均匀量化误差的标准差是 1/sqrt(12)，
@@ -153,10 +151,13 @@ def design(inc, model, every=3, warm=6):
         cf = cc = co = 0
         p0 = run[0]["p"]
         for k, x in enumerate(run, 1):
-            cf += x["f"]; cc += x["c"]; co += x["o"]
+            # 读数滞后一次：第 k 次请求带回来的读数只包含前 k−1 次的费用
+            # （第一次请求时常读到 0，下一次才跳上去）。按滞后对齐，sol 与 astra
+            # 的 RMS 都更低（0.494→0.480、0.547→0.441），反过来对齐则最差。
             if k >= warm and k % every == 0:
-                A.append([cf, cc, co, k])
+                A.append([cf, cc, co, k - 1])
                 y.append(x["p"] - p0)
+            cf += x["f"]; cc += x["c"]; co += x["o"]
     return A, y
 
 
@@ -442,7 +443,7 @@ def section_ctx(inc, model="gpt-5.6-sol"):
     线性的话，扣掉 fresh 和输出之后的「每次请求成本」应当是一条直线：
         每请求% = 平均上下文 / C + R
     四组各自反推出的 C（每 1% 能买的缓存 token）应当一致。fresh 费率本身还有
-    争议（v3 的 66K 与新拟合的约 38K），两种都算，看结论是否依赖它。
+    争议（v3 的 66,457 与现行的 42,500），两种都算，看结论是否依赖它。
     与 req/* 一样按读数滞后一次对齐：第 1..n 次的读数差对应前 n−1 次的 token。
     """
     print("\n【6】ctx/*：缓存成本是否与上下文大小成正比")
@@ -465,10 +466,10 @@ def section_ctx(inc, model="gpt-5.6-sol"):
         print("    还没有数据")
         return
     print(f"    {'组':<10}{'请求':>4}{'平均上下文':>11}{'fresh':>9}{'实测Δ':>6}"
-          f"   C（fresh 按 38K）   C（fresh 按 {SHIPPED[model][0]:,}）")
+          f"   C（fresh 按 {SHIPPED[model][0]:,}）   C（fresh 按 v3 的 66,457）")
     for cell, n, ctx, f, o, dp in pts:
         cs = []
-        for fr in (38_000, SHIPPED[model][0]):
+        for fr in (SHIPPED[model][0], 66_457):
             y = (dp - f / fr - o / O) / n
             cs.append(f"{ctx / y:>12,.0f}" if y > 0 else f"{'—':>12}")
         print(f"    {cell:<10}{n:>4}{ctx:>11,.0f}{f:>9,}{dp:>6.0f}      {cs[0]}        {cs[1]}")
@@ -478,14 +479,15 @@ def section_ctx(inc, model="gpt-5.6-sol"):
     # 按请求数加权的直线拟合：每请求% = a × 平均上下文 + b
     ws = [n for _, n, *_ in pts]
     xs_ = [ctx for _, _, ctx, *_ in pts]
-    ys_ = [(dp - f / 38_000 - o / O) / n for _, n, _, f, o, dp in pts]
+    F = SHIPPED[model][0]
+    ys_ = [(dp - f / F - o / O) / n for _, n, _, f, o, dp in pts]
     W = sum(ws)
     mx = sum(w * x for w, x in zip(ws, xs_)) / W
     my = sum(w * y for w, y in zip(ws, ys_)) / W
     sxx = sum(w * (x - mx) ** 2 for w, x in zip(ws, xs_))
     a = sum(w * (x - mx) * (y - my) for w, x, y in zip(ws, xs_, ys_)) / sxx
     b = my - a * mx
-    print(f"\n    直线拟合（fresh 按 38K）：每 1% ≈ {1 / a:,.0f} 缓存 token，每请求固定 {b:+.3f}%")
+    print(f"\n    直线拟合（fresh 按 {F:,}）：每 1% ≈ {1 / a:,.0f} 缓存 token，每请求固定 {b:+.3f}%")
     worst = 0.0
     for (cell, n, ctx, *_), y in zip(pts, ys_):
         r = y - (a * ctx + b)

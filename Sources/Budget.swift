@@ -9,28 +9,29 @@ enum Budget {
 
     // MARK: 成本模型
     //
-    // 每个模型三个系数：新增输入、输出侧（output+reasoning）、每次请求固定成本。
-    // 不能用「单一乘数 × 基准公式」——astra 三个成分相对 sol 分别是
-    // 约 2.4× / 6× / 6×，用一个标量描述会在不同调用构成下明显漂移。
+    // 每个模型四个系数：新增输入、缓存输入、输出侧（output+reasoning）、每次请求固定成本。
+    // 不能用「单一乘数 × 基准公式」——astra 各成分相对 sol 分别约
+    // 2.9× / 5.7× / 8×，用一个标量描述会在不同调用构成下明显漂移。
     //
     // 系数来自受控实验（详见仓库 research/）：
-    //   sol   —— 全部 481 条试验联合非负拟合（research/refit.py），RMS 0.494
-    //   astra —— 纯 astra、未打满窗口的累积回归；输出侧用强制长输出的一组单独定
+    //   sol   —— 全部 641 次测量联合非负拟合（research/refit.py），140 个回归点 RMS 0.84
+    //   astra —— 纯 astra、未打满窗口的回归；缓存费率测不出来，按 sol 的缓存/fresh 比例设定
     //   5.5 / terra —— 只测到整体乘数（±0.11），按比例缩放
     //   luna  —— 30 次调用零消耗
-    // 缓存输入不是免费的，但也不是早先写的「便宜 16 倍」—— 约 7.7 倍。
+    // 缓存输入约比 fresh 便宜 12 倍。
     //
-    // 系数经历了三版：
+    // 系数经历了四版：
     //   ① 「缓存免费」：分析 bug，续会话记累计 token 却被当增量求和，缓存虚增约 7 倍
-    //   ② 677,444：拿 cache/bigctx 单组做残差，其余系数沿用旧值 —— 但那些旧值是在
-    //      缓存按零时拟合的，「每请求成本」里本来就吸收了一部分缓存成本，于是重复计费，
-    //      整体单边高估（24 组平均偏差 +0.85%）
-    //   ③ 现在这版：对全部 481 条试验做联合非负最小二乘（research/refit.py）。sol 的
-    //      RMS 从 1.458 降到 0.494（1% 量化噪声下限 0.289）；24 组验证 MAE 0.66、
-    //      平均偏差 +0.32%；真实 148 次长会话预测 81.9%，实测 82%。
+    //   ② 677,444：拿 cache/bigctx 单组做残差，其余系数沿用缓存按零时拟合的旧值，重复计费
+    //   ③ 481 条联合拟合：fresh 66,457、每请求 0.0819%。旧实验每次请求都顺带几千到两万
+    //      fresh，两者同涨同落拆不开，大半 fresh 成本被记到了「每请求」上
+    //   ④ 现在这版：补上 req/*（缓存总量相同、请求数差 4 倍）和 ctx/*（请求数固定、只扫
+    //      上下文规模）后重拟合，按「读数滞后一次」对齐。req 成对比较直接解出每请求约 0，
+    //      ctx 四组落在一条直线上 —— 缓存成本与上下文大小成正比。
     //
-    // 仍不确定：sol 的 fresh 与「每请求」此消彼长，待 req/* 实验拆开；
-    // astra 的缓存费率数据定不了（剖面完全平），暂沿用外推值 252,190。
+    // 仍未对上：真实 148 次长会话预测 88%，实测 82%（③ 是 81.9%）。分段验证 MAE 1.13
+    // （③ 0.99），但平均偏差 +0.31（③ +0.61）、最大误差 −2.1（③ +3.9）。
+    // astra 的缓存费率要等 astra/bigctx 实验。
     struct Coef {
         let fresh: Double?      // 每 1% 额度能买多少 fresh 输入 token；nil = 不计费
         let cached: Double?     // 每 1% 能买多少缓存输入 token
@@ -40,13 +41,13 @@ enum Budget {
 
     // 5.5 / terra 与 sol 在现有分辨率下分不出来，按 0.86× / 0.90× 由 sol 缩放。
     static let coef: [String: Coef] = [
-        "gpt-5.6-sol":   Coef(fresh: 66_457, cached: 508_494, output: 15_196, request: 0.0819),
-        "gpt-5.5":       Coef(fresh: 77_276, cached: 591_272, output: 17_670, request: 0.0704),
-        "gpt-5.6-terra": Coef(fresh: 73_841, cached: 564_993, output: 16_884, request: 0.0737),
+        "gpt-5.6-sol":   Coef(fresh: 42_500, cached: 492_537, output: 13_572, request: 0.0328),
+        "gpt-5.5":       Coef(fresh: 49_419, cached: 572_717, output: 15_782, request: 0.0282),
+        "gpt-5.6-terra": Coef(fresh: 47_223, cached: 547_263, output: 15_080, request: 0.0295),
         "gpt-5.6-luna":  Coef(fresh: nil,    cached: nil,     output: nil,    request: 0.0),
-        "gpt-6-astra":   Coef(fresh: 27_567, cached: 252_190, output:  2_566, request: 0.4814),
+        "gpt-6-astra":   Coef(fresh: 14_545, cached: 168_559, output:  2_364, request: 0.2615),
     ]
-    static let fallback = Coef(fresh: 66_457, cached: 508_494, output: 15_196, request: 0.0819)
+    static let fallback = Coef(fresh: 42_500, cached: 492_537, output: 13_572, request: 0.0328)
     /// 缓存比 fresh 便宜几倍（界面文案用，由系数算出，不写死）
     static var cacheDiscount: Int {
         Int(((fallback.cached ?? 0) / (fallback.fresh ?? 1)).rounded())

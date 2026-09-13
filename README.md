@@ -23,8 +23,8 @@ two questions that actually change what you do next:
 - **What is that spend made of** — new input, output, or the per-request floor?
 - **What would the same work have cost on a different model?**
 
-The second one needs a cost model. Getting one took **481 controlled API calls
-across 26 experiment cells**, changing one variable at a time. The raw trials and
+The second one needs a cost model. Getting one took **641 controlled API calls
+across 32 experiment cells**, changing one variable at a time. The raw trials and
 the harness are in [`research/`](research/).
 
 ## Install
@@ -52,16 +52,22 @@ package manager, no account, no API key.
 
 ## What the measurements showed
 
-**Cached input is cheap, not free — roughly 8× cheaper than fresh.** One percent
-of the five-hour window buys ~66K fresh input tokens or ~510K cached ones. That
-gap is why long sessions still add up: one real session carrying ~150K of
-context across 148 turns spent about half of its quota on cached input alone.
-*Still don't clear context to save quota* — rebuilding it costs full fresh
-price, about 8× worse. But a very long session is not free either.
+**Cached input is cheap, not free — roughly 12× cheaper than fresh.** One percent
+of the five-hour window buys ~42K fresh input tokens or ~490K cached ones, and the
+cached cost grows in straight proportion to context size (20 requests each at
+20K, 60K, 120K and 200K of context all land on one line). That is why long
+sessions still add up: one real session carrying ~150K of context across 148
+turns spent about half of its quota on cached input alone. *Still don't clear
+context to save quota* — rebuilding it costs full fresh price, about 12× worse.
+But a very long session is not free either.
 
-**Every request has a floor.** ~0.08% on Sol regardless of size, so roughly a
-dozen requests consume 1% of the five-hour window even when almost nothing comes
-back. Redundant tool loops are expensive even when they're tiny.
+**The per-request floor is small — what you pay for is what each request
+carries.** ~0.03% on Sol, so about 30 near-empty requests make 1% of the
+five-hour window. An earlier version of this README said 0.08%: older
+experiments sent thousands of fresh tokens with every request, so the two could
+not be told apart. Two cells built to separate them — same cached total, 4×
+different request counts — put the floor near zero. A tool loop is cheap if it
+re-sends little; it is expensive when every turn drags a large context along.
 
 **Effort is not charged at a premium — on Sol.** Higher effort costs more only
 because it emits more reasoning tokens; across five levels the multiplier stayed
@@ -69,8 +75,9 @@ at 1.0 ± 0.1. In practice Sol at max effort still undercuts Astra at low effort
 so **turn the effort dial up before reaching for a bigger model.**
 
 **Astra needs more than one number.** Relative to Sol its fresh input costs
-~2.4×, while its output and per-request floor cost ~6×, so any single "Astra is
-N×" figure shifts with how much the model talks. Short, decisive Astra work is
+~2.9× and its output ~5.7× (its per-request floor looks like ~8×, but that
+figure leans on an assumed cached rate), so any single "Astra is N×" figure
+shifts with how much the model talks. Short, decisive Astra work is
 affordable; long reasoning chains on it are not.
 
 ## Measured coefficients
@@ -79,16 +86,18 @@ Each model gets four coefficients instead of one multiplier:
 
 | Model | New input per 1% | Cached input per 1% | Output + reasoning per 1% | Per request |
 |---|---:|---:|---:|---:|
-| `gpt-5.6-sol` | 66,457 tok | 508,494 tok | 15,196 tok | 0.0819% |
-| `gpt-5.5` | 77,276 tok | 591,272 tok | 17,670 tok | 0.0704% |
-| `gpt-5.6-terra` | 73,841 tok | 564,993 tok | 16,884 tok | 0.0737% |
+| `gpt-5.6-sol` | 42,500 tok | 492,537 tok | 13,572 tok | 0.0328% |
+| `gpt-5.5` | 49,419 tok | 572,717 tok | 15,782 tok | 0.0282% |
+| `gpt-5.6-terra` | 47,223 tok | 547,263 tok | 15,080 tok | 0.0295% |
 | `gpt-5.6-luna` | free | free | free | free |
-| `gpt-6-astra` | 27,567 tok | 252,190 tok\* | 2,566 tok | 0.4814% |
+| `gpt-6-astra` | 14,545 tok | 168,559 tok\* | 2,364 tok | 0.2615%\* |
 
-Sol's four are fitted jointly on all 481 trials with non-negative least squares
-([`research/refit.py`](research/refit.py)). 5.5 and Terra are indistinguishable
-from Sol at this resolution and are scaled from it. \*Astra's cached rate cannot
-be identified from the current data and is held at an extrapolated value.
+Sol's four are fitted jointly on all 641 measured calls with non-negative least
+squares ([`research/refit.py`](research/refit.py)). 5.5 and Terra are
+indistinguishable from Sol at this resolution and are scaled from it. \*Astra's
+cached rate cannot be identified from the current data; it is set at Sol's
+cached-to-fresh ratio, and Astra's per-request figure moves with that choice. A
+dedicated `astra/bigctx` cell is defined but not yet run.
 
 <details>
 <summary><b>How this was measured, and where it's shaky</b></summary>
@@ -99,9 +108,10 @@ These numbers are only worth something if you know their error bars.
 
 **Reliability, by model**
 
-- **Sol is solid** — a joint fit over 94 regression points, RMS 0.49 against a
-  0.29 rounding floor, leave-one-out 0.53. Its fresh-vs-per-request split still
-  trades off; a dedicated experiment (`req/*`) is queued to pin it.
+- **Sol is the best-measured model, but not settled** — a joint fit over 140
+  regression points, RMS 0.84 against a 0.29 rounding floor, leave-one-out 0.87.
+  The fit error sits well above the floor, and one real 148-request session is
+  over-predicted (88% vs. 82%). The table below shows where each version lands.
 - **5.5 and Terra are indistinguishable from Sol** at this resolution. Their
   error bars overlap; treat all three as ≈1×.
 - **Astra and Luna rest on ~30–40 calls each.** Read them as order-of-magnitude.
@@ -119,7 +129,7 @@ These numbers are only worth something if you know their error bars.
   keep flowing, so Δ is truncated.
 - **Concurrency contaminates attribution.** Don't use Codex while measuring.
 
-**Two things about the quota system itself**
+**Three things about the quota system itself**
 
 - **Readings are event-driven.** The logs record a value only when Codex makes a
   request, so "current usage" is always as of the last request. After a window
@@ -129,8 +139,11 @@ These numbers are only worth something if you know their error bars.
 - **The 5-hour limit is a rolling window, not a fixed one.** Usage going from 84%
   to 0% in 43 minutes appears in the data; a fixed window cannot do that, a
   rolling one can when a burst ages out together.
+- **A reading lags one request.** The quota value returned with a request does
+  not yet include that request's own cost; the next one does. Aligning the fit
+  that way lowers its error for both Sol and Astra.
 
-**How the cached rate was pinned down — three versions**
+**How the coefficients got here — four versions**
 
 1. **"Cached input is free."** Wrong, and wrong in the analysis rather than the
    data: resumed-session cells record *cumulative* token counts, and the analysis
@@ -142,13 +155,31 @@ These numbers are only worth something if you know their error bars.
    a cached term on top double-counted it: every cell came out over-estimated,
    by +0.85% on average.
 3. **508,494 tok/1%**, from refitting all four coefficients jointly on all 481
-   trials. Across 24 cells: MAE 0.87% → 0.66%, mean bias +0.85% → +0.32%.
+   trials. Across 24 cells: MAE 0.87% → 0.66%, mean bias +0.85% → +0.32%. But
+   its per-request floor (0.0819%) was inflated: in those trials fresh input and
+   request count rose together, so the fit could trade one for the other.
+4. **Current.** Two new cell families broke that tie. `req/many` and `req/few`
+   hold the cached total equal while request counts differ 4×; the difference
+   alone solves the floor at −0.012% ± 0.042%. `ctx/*` fix 20 requests and sweep
+   context from 20K to 200K; all four sit within rounding of one straight line.
+   Refitting everything, aligned to the one-request lag in quota readings, gives
+   the table above.
 
-|  | v2 | v3 (current) | observed |
+|  | v3 | v4 (current) | observed |
 |---|---:|---:|---:|
-| `cache/warm` cell | 1.4% | 1.6% | 1% |
-| `cache/bigctx` cell | 24.0% | 25.2% | 24% |
-| a real 148-request session | 80.7% | 81.9% | 82% |
+| `req/many` — 63 small requests | 12.7% | 10.6% | 9% |
+| `req/few` — 15 large requests | 7.2% | 6.7% | 8% |
+| `ctx/20k` | 2.5% | 1.7% | 1% |
+| `ctx/200k` | 9.1% | 8.5% | 11% |
+| `cache/bigctx` | 24.7% | 25.4% | 24% |
+| a real 148-request session | 81.9% | 88.0% | 82% |
+
+Neither version wins everywhere. v4 fixes the cells designed to separate the
+floor from fresh input and halves the mean bias (+0.61 → +0.31 across 11
+segments), but its segment MAE is slightly worse (0.99 → 1.13) and it misses the
+real session by 6 points. Large contexts are under-predicted by both —
+`ctx/200k` suggests cached input may cost more than the joint fit says, which the
+older `cache/bigctx` cell does not show. That is the open question.
 
 Version 3 came out of a second, independent pass over the data
 ([#1](https://github.com/kongleiwork-art/codex-cost/pull/1)). That pass ran on the
@@ -190,7 +221,7 @@ uploaded. The panel shows aggregate numbers only — no prompts, no file content
 Sources/     the app — Swift, no dependencies
 cli/         the same cost model as a terminal tool
 tests/       fixture logs + regression tests for the app and the CLI
-research/    the experiment harness and all 481 raw trials
+research/    the experiment harness and every raw trial
 docs/        screenshots, regenerated from fixtures by docs/render.sh
 ```
 

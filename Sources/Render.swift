@@ -38,7 +38,7 @@ enum Renderer {
                         .lineSpacing(6)
                         .padding(.top, 18)
                     VStack(alignment: .leading, spacing: 11) {
-                        bullet("481 controlled trials behind the cost model",
+                        bullet("641 controlled trials behind the cost model",
                                Color(red: 0.30, green: 0.68, blue: 1.00))
                         bullet("Native Swift · no dependencies",
                                Color(red: 0.72, green: 0.44, blue: 1.00))
