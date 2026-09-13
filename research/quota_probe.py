@@ -238,6 +238,19 @@ def scan_rollout(path):
     return {"tokens": tok, "quota": quota, "context_window": ctx,
             "events": n, "quota_ts": quota_ts}
 
+def first_event_ts(path):
+    """rollout 里第一条事件的时间戳 —— 用来判断是新开的会话还是续上了旧会话"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    return json.loads(line).get("timestamp") or ""
+                except Exception:
+                    continue
+    except OSError:
+        pass
+    return ""
+
 def current_quota():
     """取最新的一次额度读数。
 
@@ -287,9 +300,12 @@ def run_trial(codex, cell, workdir, timeout=300, resume_id=None):
            "-c", 'sandbox_mode="read-only"',
            "-c", 'approval_policy="never"',
            "-c", f'projects."{workdir}".trust_level="trusted"']
-    if cell.get("resume"):
-        # 显式指定会话 id：--last 会接到别的并发会话上，而缓存组正是最关键的一组
-        cmd += ["resume", resume_id] if resume_id else ["resume", "--last"]
+    if cell.get("resume") and resume_id:
+        # 只续本组自己开出来的会话。组内第一次调用不带 resume，开一个新会话。
+        # 以前这里退回 `resume --last`，会接到 sandbox 里上一次用过的会话上：
+        # 09-13 的 req/many 就接到了 09-10 cache/bigctx 那个 128K 的会话，
+        # 上下文从设计的 5 万变成 16 万，整组作废。
+        cmd += ["resume", resume_id]
     cmd.append(cell["prompt"])
     started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
@@ -312,6 +328,7 @@ def run_trial(codex, cell, workdir, timeout=300, resume_id=None):
     name = os.path.basename(best) if best else None
     return {"started": started, "ok": ok, "error": err,
             "rollout": name, "session_id": session_id_of(name),
+            "session_started": first_event_ts(best) if best else "",
             "elapsed_s": round(time.time() - t0, 1),
             **(parsed or {})}
 
@@ -409,6 +426,13 @@ def cmd_run(args):
                     return 0
                 r = run_trial(codex, trial, workdir, timeout=args.timeout,
                               resume_id=resume_id if c.get("resume") else None)
+                # 护栏：本组第一次调用必须是新会话。接到旧会话说明上下文不是设计的大小，
+                # 这一轮不写入结果，整组停下 —— 最多浪费一次调用，而不是一整组。
+                if (c.get("resume") and not resume_id and r.get("ok")
+                        and r.get("session_started", "")[:19] < r["started"][:19]):
+                    print(f"\n本组第一次调用接到了旧会话 {r.get('rollout')}"
+                          f"（开始于 {r.get('session_started')}），停止，本轮不写入。")
+                    return 1
                 if c.get("resume") and not resume_id and r.get("session_id"):
                     resume_id = r["session_id"]      # 之后每次都续这一个会话
                 if warming and not r["ok"]:
