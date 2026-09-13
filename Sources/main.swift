@@ -405,7 +405,6 @@ struct Root: View {
     let notchWidth: CGFloat
     let onResize: (Bool) -> Void
     @State private var expanded = CommandLine.arguments.contains("--expanded")
-    @State private var hovering = false
 
     var body: some View {
         Group {
@@ -429,9 +428,6 @@ struct Root: View {
                     bottomLeadingRadius: 13, bottomTrailingRadius: 13, style: .continuous)))
             GlassPanel(shape: shape, expanded: expanded)
         }
-        .scaleEffect(hovering && !expanded ? 1.03 : 1.0, anchor: .top)
-        .animation(.spring(response: 0.3, dampingFraction: 0.72), value: hovering)
-        .onHover { hovering = $0 }
         .onTapGesture {
             expanded.toggle(); onResize(expanded)
             if expanded { store.refresh() }
@@ -474,29 +470,35 @@ struct GlassPanel: View {
     let shape: AnyInsettableShape
     var expanded: Bool
     var body: some View {
-        shape.fill(.clear)
-            .background { Backdrop() }
-            .background {
-                LinearGradient(colors: [Color(white: 0.13).opacity(expanded ? 0.90 : 0.94),
-                                        Color(white: 0.03).opacity(expanded ? 0.95 : 0.97)],
-                               startPoint: .top, endPoint: .bottom)
-            }
-            .overlay {
-                LinearGradient(stops: [
-                    .init(color: .white.opacity(0.055), location: 0.0),
-                    .init(color: .white.opacity(0.012), location: 0.4),
-                    .init(color: .clear, location: 0.7)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
-            .overlay {
-                shape.strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.30), .white.opacity(0.09),
-                                            .white.opacity(0.05)],
-                                   startPoint: .top, endPoint: .bottom), lineWidth: 0.7)
-            }
-            .clipShape(shape)
-            .shadow(color: .black.opacity(expanded ? 0.55 : 0.30),
-                    radius: expanded ? 28 : 10, y: expanded ? 12 : 4)
+        if expanded {
+            shape.fill(.clear)
+                .background { Backdrop() }
+                .background {
+                    LinearGradient(colors: [Color(white: 0.13).opacity(0.90),
+                                            Color(white: 0.03).opacity(0.95)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
+                .overlay {
+                    LinearGradient(stops: [
+                        .init(color: .white.opacity(0.055), location: 0.0),
+                        .init(color: .white.opacity(0.012), location: 0.4),
+                        .init(color: .clear, location: 0.7)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.30), .white.opacity(0.09),
+                                                .white.opacity(0.05)],
+                                       startPoint: .top, endPoint: .bottom), lineWidth: 0.7)
+                }
+                .clipShape(shape)
+        } else {
+            // 折叠态要和刘海融成一块。刘海是纯黑、没有描边也没有高光，
+            // 毛玻璃、渐变或描边任何一样都会让它看起来是贴在刘海旁边的一条灰块。
+            shape.fill(Color.black)
+        }
+        // 不加投影：SwiftUI 的 .shadow 只能画在窗口范围内，超出的部分被裁掉，
+        // 边缘留下一圈矩形硬边；窗口自带的阴影再沿这圈半透明像素描出一个矩形框。
     }
 }
 
@@ -518,7 +520,8 @@ final class NotchWindow: NSWindow {
                    backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        // 窗口是透明的异形面板，系统阴影会沿窗口矩形描边，见 GlassPanel
+        hasShadow = false
         level = .statusBar
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         isMovable = false
