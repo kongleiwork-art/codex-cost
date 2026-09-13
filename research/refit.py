@@ -97,6 +97,7 @@ def increments(rows):
     for rs in by_sess.values():
         rs.sort(key=lambda r: (r.get("events") or 0, r.get("trial") or 0))
         prev = (0, 0, 0)
+        warmed = False
         for r in rs:
             t = r["tokens"]
             cum = (t["input_tokens"] - t["cached_input_tokens"],
@@ -105,9 +106,11 @@ def increments(rows):
             d = tuple(max(0, cum[k] - prev[k]) for k in range(3)) if len(rs) > 1 else cum
             prev = cum
             if r.get("phase", "measure") != "measure":
+                warmed = True
                 continue
             out.append(dict(t=when(r), cell=r["cell"], model=r["model"],
-                            f=d[0], c=d[1], o=d[2], p=pct5h(r)))
+                            f=d[0], c=d[1], o=d[2], p=pct5h(r), after_warmup=warmed))
+            warmed = False
     out.sort(key=lambda x: x["t"])
     return out
 
@@ -127,7 +130,10 @@ def runs_for(inc, model, min_len=6):
             continue
         if cur is None:
             cur = []
-        if cur and ((x["t"] - cur[-1]["t"]).total_seconds() > 3600 or x["p"] < cur[-1]["p"]):
+        # 预热之后必须另起一段：预热的额度花在两段测量之间，读数跳了，token 却不在
+        # 增量里。req/many 紧接着 req/few 时，20 万的预热让合并段凭空多出约 5%。
+        if cur and ((x["t"] - cur[-1]["t"]).total_seconds() > 3600 or x["p"] < cur[-1]["p"]
+                    or x.get("after_warmup")):
             out.append(cur)
             cur = []
         cur.append(x)
@@ -217,8 +223,9 @@ def section_bursts(inc, rows):
     for x in inc:
         # 额度读数回落 = 窗口重置。跨重置的一段，max−min 会漏掉重置后的消耗，
         # 而请求数照算 —— 汇总表会凭空显示成「高估」。astra/clean 就踩过。
+        # 预热之后也断开：预热花的额度在读数里，token 却不在增量里（见 runs_for）
         if cur and ((x["t"] - cur[-1]["t"]).total_seconds() > 3600
-                    or x["p"] < cur[-1]["p"]):
+                    or x["p"] < cur[-1]["p"] or x.get("after_warmup")):
             bursts.append(cur); cur = []
         cur.append(x)
     if cur:
