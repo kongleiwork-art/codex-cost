@@ -390,15 +390,55 @@ def section_regime(inc, A, y):
     print("    （那条真实会话的原始 rollout 不在仓库里，总量取自本机日志统计。）")
 
 
+def section_pairs(inc, model="gpt-5.6-sol"):
+    """req/many 与 req/few 成对比较，不经联合拟合直接解「每请求成本」。
+
+    两组的缓存总量设计成相等、请求数差 4 倍，fresh 和输出都很小。于是
+        Δ实测(many) − Δ实测(few) ≈ R × (请求数之差) + 残余 token 部分之差
+    残余部分按现行 F/C/O 扣掉，剩下的就是 R。
+
+    读数滞后一次（第 k 次的费用要到第 k+1 次的读数里才出现，见联合拟合里
+    「滞后」对齐 RMS 最低），所以第 1..n 次的读数差对应第 1..n−1 次的 token。
+    """
+    print("\n【5】req/many vs req/few：直接解每请求成本")
+    F, C, O, R = SHIPPED[model]
+    got = {}
+    for cell in ("req/many", "req/few"):
+        xs = sorted((x for x in inc if x["cell"] == cell), key=lambda x: x["t"])
+        if len(xs) < 4:
+            print(f"    {cell:<10} 可用 {len(xs)} 次，不够")
+            continue
+        if any(b["p"] < a["p"] for a, b in zip(xs, xs[1:])):
+            print(f"    {cell:<10} 读数中途回落（窗口滚动），这组不能直接用")
+            continue
+        seg = xs[:-1]
+        f, c, o = (sum(x[k] for x in seg) for k in "fco")
+        n, dp = len(seg), xs[-1]["p"] - xs[0]["p"]
+        got[cell] = (f, c, o, n, dp)
+        pred = f / F + c / C + o / O + R * n
+        print(f"    {cell:<10} {n:>3} 次  fresh {f:>8,}  cached {c:>10,}  out {o:>5,}"
+              f"   实测 Δ{dp:>3}%   按现行系数 {pred:5.1f}%")
+    if len(got) < 2:
+        print("    两组都跑完才能解")
+        return
+    (f1, c1, o1, n1, d1), (f2, c2, o2, n2, d2) = got["req/many"], got["req/few"]
+    tok = (f1 - f2) / F + (c1 - c2) / C + (o1 - o2) / O
+    r_hat = (d1 - d2 - tok) / (n1 - n2)
+    band = 2 / abs(n1 - n2)          # 两个读数差各有 ±1 的截断误差
+    print(f"    两组 cached 相差 {abs(c1 - c2) / max(c1, c2):.0%}；扣掉 token 部分 {tok:+.2f}% 后")
+    print(f"    每请求成本 ≈ {r_hat:.3f}%（量化误差 ±{band:.3f}），现行 {R}")
+
+
 def section_gaps(rows):
-    print("\n【5】数据缺口")
-    cells = collections.Counter(r["cell"] for r in rows if r.get("ok"))
-    for cell, note in (("cache/bigctx", "README 用它定下 677,444，但一条结果都没有"),
-                       ("req/many", "分离每请求成本，待跑"),
-                       ("req/few", "分离每请求成本，待跑"),
-                       ("ctx/200k", "测缓存线性，待跑")):
+    print("\n【6】数据覆盖")
+    cells = collections.Counter(r["cell"] for r in rows
+                                if r.get("ok") and r.get("phase", "measure") == "measure")
+    for cell, note in (("cache/bigctx", "定缓存费率"),
+                       ("req/many", "分离每请求成本"),
+                       ("req/few", "分离每请求成本"),
+                       ("ctx/200k", "测缓存是否线性")):
         n = cells.get(cell, 0)
-        print(f"    {cell:<16}{n:>4} 条   {note}")
+        print(f"    {cell:<16}{n:>4} 条   {note}{'' if n else '，待跑'}")
     zero = [r["tokens"].get("cache_write_input_tokens", 0)
             for r in rows if r.get("ok") and r.get("tokens")]
     print(f"\n    cache_write_input_tokens：{len(zero)} 条里 "
@@ -429,6 +469,7 @@ def main():
         if model == args.model:
             section_profile(A, y, model)
             section_regime(inc, A, y)
+    section_pairs(inc)
     section_gaps(rows)
     print()
     return 0
