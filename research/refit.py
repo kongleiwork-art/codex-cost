@@ -82,9 +82,13 @@ def increments(rows):
     所以第 N 条记录装的是前 N 次的**累计**。直接按 trial 求和/取中位数会把
     缓存量放大好几倍。这里按 session 分组，用相邻累计值之差还原增量。
     """
+    # 预热轮也要参与求差：它和测量轮写在同一个会话文件里，累计值里有它。
+    # 只拿测量轮分组的话，第一条测量的「增量」会吞下整段预热的 token，而那部分
+    # 额度在起点读数之前就花掉了 —— req/few 这种 20 万的预热会凭空多出约 18 万
+    # fresh，把 fresh 系数压低。所以先全部求差，再只输出测量轮。
     ok = [r for r in rows
-          if r.get("ok") and r.get("tokens") and pct5h(r) is not None
-          and r.get("phase", "measure") == "measure"]
+          if r.get("ok") and r.get("tokens")
+          and (pct5h(r) is not None or r.get("phase", "measure") != "measure")]
     by_sess = collections.defaultdict(list)
     for r in ok:
         by_sess[r.get("session_id") or r.get("rollout")].append(r)
@@ -100,6 +104,8 @@ def increments(rows):
                    t["output_tokens"] + t["reasoning_output_tokens"])
             d = tuple(max(0, cum[k] - prev[k]) for k in range(3)) if len(rs) > 1 else cum
             prev = cum
+            if r.get("phase", "measure") != "measure":
+                continue
             out.append(dict(t=when(r), cell=r["cell"], model=r["model"],
                             f=d[0], c=d[1], o=d[2], p=pct5h(r)))
     out.sort(key=lambda x: x["t"])
