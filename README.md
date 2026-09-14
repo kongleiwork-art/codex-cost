@@ -48,7 +48,23 @@ package manager, no account, no API key.
 | **Both quota windows** | 5-hour and weekly, with reset countdowns |
 | **Threshold alerts** | Notifies at 80% and 95% with burn rate, time left, and a cheaper model when one would help |
 | **Menu-bar fallback** | Works on Macs without a notch |
+| **Notch task entry** | Type a task at the top of the expanded panel; local rules (Luna if needed) pick a model once and lock it |
 | **Bilingual** | English / 中文, follows system language |
+
+### Task routing (local rules + Luna)
+
+Prompt cache is not shared across models — switching mid-session re-bills long context as fresh. So:
+
+1. **Local rules first** (0 tokens): task keywords, `git status` file count / diff size, whether tests are touched.
+2. **Luna only when confidence is low**: short judge on the task text; on failure fall back to `sol` (Luna failure costs time, not quota).
+3. **No mid-session model switch**: the chosen `luna` / `sol` / `astra` starts a **new** `codex exec -m …` session and stays there.
+
+Preview routing from the terminal (does not launch a task):
+
+```bash
+python3 cli/codex_route.py --task "fix the flaky test" --workdir . --json
+python3 cli/codex_route.py --task "..." --no-luna   # local rules only
+```
 
 ## What the measurements showed
 

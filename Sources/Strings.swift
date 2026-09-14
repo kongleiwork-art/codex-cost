@@ -75,4 +75,32 @@ enum L {
     static func switchHint(_ from: String, _ to: String, _ save: Double) -> String {
         s("换成 \(to) 可省约 \(Int(save))%", "Switching to \(to) would save about \(Int(save))%")
     }
+
+    // 刘海任务入口 / 路由
+    static var taskPlaceholder: String {
+        s("输入任务，回车发送（模型只定一次）",
+          "Type a task, Enter to send (model locked once)")
+    }
+    static var workdirLabel: String { s("工作目录", "Working directory") }
+    static var routing: String { s("路由中…", "Routing…") }
+    static var launching: String { s("启动中…", "Launching…") }
+    static func routedTo(_ model: String) -> String {
+        s("已选 \(model)", "Chose \(model)")
+    }
+    static func taskStarted(_ model: String) -> String {
+        s("已用 \(model) 开新会话", "Started a new session on \(model)")
+    }
+    static var taskFailed: String { s("启动失败", "Launch failed") }
+    static var codexMissing: String {
+        s("找不到 codex 命令，请先安装 Codex CLI",
+          "codex CLI not found — install it first")
+    }
+    static var workdirMissing: String {
+        s("工作目录不存在", "Working directory does not exist")
+    }
+    static var sendTask: String { s("发送", "Send") }
+    static var collapse: String { s("收起", "Collapse") }
+    static var modelLockedOnce: String {
+        s("会话中途不切模型，保缓存", "Model stays locked mid-session to keep cache")
+    }
 }
