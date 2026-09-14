@@ -48,21 +48,30 @@ package manager, no account, no API key.
 | **Both quota windows** | 5-hour and weekly, with reset countdowns |
 | **Threshold alerts** | Notifies at 80% and 95% with burn rate, time left, and a cheaper model when one would help |
 | **Menu-bar fallback** | Works on Macs without a notch |
-| **Notch task entry** | Type a task at the top of the expanded panel; local rules (Luna if needed) pick a model once and lock it |
+| **Notch task entry** | Type a task at the top of the expanded panel; local rules (Luna if needed) pick a model once and open it in Terminal |
 | **Bilingual** | English / 中文, follows system language |
 
 ### Task routing (local rules + Luna)
 
-Prompt cache is not shared across models — switching mid-session re-bills long context as fresh. So:
+Type a task and a project folder at the top of the expanded panel. codex-cost
+picks a model once and opens a new interactive Codex session on it in Terminal.
 
-1. **Local rules first** (0 tokens): task keywords, `git status` file count / diff size, whether tests are touched.
-2. **Luna only when confidence is low**: short judge on the task text; on failure fall back to `sol` (Luna failure costs time, not quota).
-3. **No mid-session model switch**: the chosen `luna` / `sol` / `astra` starts a **new** `codex exec -m …` session and stays there.
+1. **Local rules first** (0 tokens), from the task text only: keywords, plus
+   scope words like "everywhere" or "across". The state of your working tree is
+   not used — twelve uncommitted files say nothing about how hard the next task is.
+2. **Luna only when the rules have nothing to go on.** It reads the task text
+   and answers one word; if that fails, the task goes to `sol`. Luna cost nothing
+   in our measurements, so a failed judge costs time, not quota.
+3. **No mid-session switch.** The prompt cache is per model; switching halfway
+   re-bills the whole context as fresh input (~12× the cached price on Sol).
+4. **Your own approval settings apply.** The session runs in Terminal like any
+   Codex session you start yourself — no forced write access or auto-approval —
+   so you can watch it and step in.
 
-Preview routing from the terminal (does not launch a task):
+Preview a routing decision without starting anything:
 
 ```bash
-python3 cli/codex_route.py --task "fix the flaky test" --workdir . --json
+python3 cli/codex_route.py --task "fix the flaky test" --json
 python3 cli/codex_route.py --task "..." --no-luna   # local rules only
 ```
 
