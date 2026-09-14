@@ -56,7 +56,8 @@ private struct PanelWrapper: View {
     @ObservedObject var store: Store
     var body: some View {
         Expanded(snap: store.snap, error: store.error,
-                 lastRefresh: store.lastRefresh) { store.refresh() }
+                 lastRefresh: store.lastRefresh,
+                 store: store) { store.refresh() }
             .frame(width: 372)
             .background {
                 ZStack {

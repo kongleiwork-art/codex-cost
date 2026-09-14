@@ -13,6 +13,15 @@ final class Store: ObservableObject {
     @Published var lastRefresh = Date()
     /// 菜单栏模式下用来刷新状态栏标题
     var onUpdate: (() -> Void)?
+
+    // 刘海任务入口
+    @Published var taskText = ""
+    @Published var workdir = TaskLaunch.savedWorkdir()
+    @Published var busy = false
+    @Published var launchStatus: String?
+    @Published var lastRoutedModel: String?
+    @Published var statusBusyPhase: String?   // routing / launching
+
     private var timer: Timer?
 
     init() {
@@ -27,12 +36,36 @@ final class Store: ObservableObject {
             let r = Budget.compute()          // 纯 Swift，无外部依赖
             await MainActor.run {
                 if r.requests == 0 && r.quota.isEmpty {
-                    self.error = "没找到 Codex 会话记录"
+                    self.error = L.noLogs
                 } else {
                     self.snap = r; self.error = nil
                     Alerts.shared.check(r)
                 }
                 self.lastRefresh = Date()
+                self.onUpdate?()
+            }
+        }
+    }
+
+    func submitTask() {
+        let task = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !task.isEmpty, !busy else { return }
+        busy = true
+        statusBusyPhase = L.routing
+        launchStatus = L.routing
+        let dir = workdir
+        Task.detached(priority: .userInitiated) {
+            // 先路由（本地规则，可能 Luna），再 exec —— 都在 TaskLaunch.run 里
+            let outcome = TaskLaunch.run(task: task, workdir: dir, allowLuna: true)
+            await MainActor.run {
+                self.busy = false
+                self.statusBusyPhase = nil
+                self.lastRoutedModel = outcome.model
+                self.launchStatus = outcome.message
+                if outcome.ok {
+                    self.taskText = ""
+                    self.refresh()
+                }
                 self.onUpdate?()
             }
         }
@@ -123,13 +156,21 @@ struct SectionLabel: View {
 struct Collapsed: View {
     let snap: Snapshot?
     let notchWidth: CGFloat
+    var busy: Bool = false
+    var routed: String? = nil
     var body: some View {
         // 看更满的那个窗口：周额度打满时 5 小时还剩多少都没用
         let used = snap?.binding?.usedPercent ?? 0
         HStack(spacing: 0) {
             HStack(spacing: 5) {
-                Dot(c: Palette.quota(used), d: 7)
-                Text(shortModel(snap?.currentModel))
+                if busy {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Dot(c: Palette.quota(used), d: 7)
+                }
+                Text(busy
+                     ? (routed.map { shortModel($0) } ?? "…")
+                     : shortModel(snap?.currentModel))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
@@ -169,10 +210,13 @@ struct Expanded: View {
     let snap: Snapshot?
     let error: String?
     let lastRefresh: Date
+    var store: Store? = nil
+    var onCollapse: (() -> Void)? = nil
     let onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            taskEntry()
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 11)).foregroundStyle(.orange)
@@ -194,6 +238,88 @@ struct Expanded: View {
         .padding(.horizontal, 17)
         .padding(.top, 15)
         .padding(.bottom, 11)
+    }
+
+    /// 刘海顶部：输入任务 → 本地规则 / Luna 路由 → 锁定模型启动。
+    @ViewBuilder func taskEntry() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let store {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 9)).foregroundStyle(.white.opacity(0.35))
+                    TextField(L.workdirLabel, text: Binding(
+                        get: { store.workdir },
+                        set: { store.workdir = $0 }))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .disabled(store.busy)
+                }
+                HStack(spacing: 8) {
+                    TextField(L.taskPlaceholder, text: Binding(
+                        get: { store.taskText },
+                        set: { store.taskText = $0 }))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .disabled(store.busy)
+                        .onSubmit { store.submitTask() }
+                    Button {
+                        store.submitTask()
+                    } label: {
+                        Image(systemName: store.busy ? "hourglass" : "arrow.up.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(store.busy ? .white.opacity(0.35)
+                                                        : Color(red: 0.36, green: 0.85, blue: 0.52))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.busy || store.taskText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.white.opacity(0.08)))
+                if let status = store.launchStatus {
+                    HStack(spacing: 5) {
+                        if store.busy { ProgressView().controlSize(.mini) }
+                        Text(status)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .lineLimit(2)
+                    }
+                } else {
+                    Text(L.modelLockedOnce)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.white.opacity(0.32))
+                }
+            } else {
+                // 离屏渲染 / 量高占位，保持版面高度接近真实展开态
+                HStack {
+                    Text(L.taskPlaceholder)
+                        .font(.system(size: 12)).foregroundStyle(.white.opacity(0.35))
+                    Spacer()
+                    Image(systemName: "arrow.up.circle.fill")
+                        .foregroundStyle(.white.opacity(0.25))
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.white.opacity(0.08)))
+                Text(L.modelLockedOnce)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.white.opacity(0.32))
+            }
+            if onCollapse != nil {
+                HStack {
+                    Spacer()
+                    Button(L.collapse) { onCollapse?() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.40))
+                }
+            }
+        }
+        .padding(.bottom, 12)
+        // 点输入区不要触发外层折叠手势
+        .onTapGesture {}
     }
 
     @ViewBuilder func sep() -> some View {
@@ -404,15 +530,24 @@ struct Root: View {
     @ObservedObject var store: Store
     let notchWidth: CGFloat
     let onResize: (Bool) -> Void
+    /// 展开时允许刘海窗变成 key，否则 TextField 收不到键盘
+    var onKeyFocus: ((Bool) -> Void)? = nil
     @State private var expanded = CommandLine.arguments.contains("--expanded")
 
     var body: some View {
         Group {
             if expanded {
                 Expanded(snap: store.snap, error: store.error,
-                         lastRefresh: store.lastRefresh) { store.refresh() }
+                         lastRefresh: store.lastRefresh,
+                         store: store,
+                         onCollapse: {
+                             expanded = false
+                             onResize(false)
+                             onKeyFocus?(false)
+                         }) { store.refresh() }
             } else {
-                Collapsed(snap: store.snap, notchWidth: notchWidth)
+                Collapsed(snap: store.snap, notchWidth: notchWidth,
+                          busy: store.busy, routed: store.lastRoutedModel)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -429,13 +564,20 @@ struct Root: View {
             GlassPanel(shape: shape, expanded: expanded)
         }
         .onTapGesture {
-            expanded.toggle(); onResize(expanded)
-            if expanded { store.refresh() }
+            // 展开态靠「收起」按钮折叠，避免点输入框时整窗收起
+            guard !expanded else { return }
+            expanded = true
+            onResize(true)
+            onKeyFocus?(true)
+            store.refresh()
         }
         .contextMenu {
             Button(L.refresh) { store.refresh() }
             Divider()
             Button(L.quit) { NSApp.terminate(nil) }
+        }
+        .onAppear {
+            if expanded { onKeyFocus?(true) }
         }
     }
 }
@@ -504,9 +646,10 @@ struct GlassPanel: View {
 
 // MARK: - 窗口
 
-/// 无边框窗口，悬在刘海正下方。不抢焦点、跟随所有 Space。
+/// 无边框窗口，悬在刘海正下方。折叠时不抢焦点；展开输入任务时允许成为 key。
 final class NotchWindow: NSWindow {
-    override var canBecomeKey: Bool { false }
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 
     /// macOS 默认不允许窗口盖住菜单栏区域，会把 frame 往下推（实测 44px）。
@@ -609,6 +752,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.expandedNow = expanded
             self.place(expanded ? self.expandedSize : self.collapsedSize, animated: true)
+        },
+                        onKeyFocus: { [weak self] allow in
+            guard let self else { return }
+            self.window.allowsKey = allow
+            if allow {
+                self.window.makeKeyAndOrderFront(nil)
+            }
         })
         // 展开着的时候出现或消失一个独立额度池，窗口高度要跟着变
         store.onUpdate = { [weak self] in

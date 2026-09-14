@@ -44,7 +44,23 @@ cd codex-cost && ./build.sh && open CodexCost.app
 | **两个额度窗口** | 5 小时和每周，带重置倒计时 |
 | **阈值提醒** | 80% 和 95% 时通知，附燃烧速率、剩余时间，以及值得换的更便宜模型 |
 | **菜单栏回退** | 没有刘海的 Mac 照样能用 |
+| **刘海任务入口** | 展开面板顶部直接输入任务；本地规则（必要时 Luna）选一次模型并锁定 |
 | **中英双语** | 跟随系统语言 |
+
+### 任务路由（本地规则 + Luna）
+
+缓存不能跨模型共用，中途换模型会把长上下文当 fresh 重读。因此：
+
+1. **本地规则先判**（0 token）：看任务文案关键词、`git status` 变更文件数 / diff 体量、是否动到测试。
+2. **置信度低时才问 Luna**：只送任务描述做短判定；失败则回退 `sol`（Luna 失败只耗时间，不耗额度）。
+3. **会话中途不切模型**：选定的 `luna` / `sol` / `astra` 用 `codex exec -m …` 开**新会话**跑完。
+
+也可在终端预览路由结果（不启动任务）：
+
+```bash
+python3 cli/codex_route.py --task "fix the flaky test" --workdir . --json
+python3 cli/codex_route.py --task "..." --no-luna   # 只用本地规则
+```
 
 ## 测出来的几件事
 
