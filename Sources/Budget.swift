@@ -10,12 +10,12 @@ enum Budget {
     // MARK: 成本模型
     //
     // 每个模型四个系数：新增输入、缓存输入、输出侧（output+reasoning）、每次请求固定成本。
-    // 不能用「单一乘数 × 基准公式」——astra 各成分相对 sol 分别约
-    // 2.9× / 5.7× / 8×，用一个标量描述会在不同调用构成下明显漂移。
+    // 不能用「单一乘数 × 基准公式」——astra 的缓存约是 sol 的 2 倍、输出约 6 倍，
+    // 每请求底价则高一个数量级，用一个标量描述会在不同调用构成下明显漂移。
     //
     // 系数来自受控实验（详见仓库 research/）：
-    //   sol   —— 全部 641 次测量联合非负拟合（research/refit.py），140 个回归点 RMS 0.84
-    //   astra —— 纯 astra、未打满窗口的回归；缓存费率测不出来，按 sol 的缓存/fresh 比例设定
+    //   sol   —— 全部 sol 测量联合非负拟合（research/refit.py），140 个回归点 RMS 0.84
+    //   astra —— 纯 astra 回归；缓存费率由 astra/bigctx（约 12 万上下文）定下，约 25 万
     //   5.5 / terra —— 只测到整体乘数（±0.11），按比例缩放
     //   luna  —— 30 次调用零消耗
     // 缓存输入约比 fresh 便宜 12 倍。
@@ -31,7 +31,8 @@ enum Budget {
     //
     // 仍未对上：真实 148 次长会话预测 88%，实测 82%（③ 是 81.9%）。分段验证 MAE 1.13
     // （③ 0.99），但平均偏差 +0.31（③ +0.61）、最大误差 −2.1（③ +3.9）。
-    // astra 的缓存费率要等 astra/bigctx 实验。
+    // astra 只有 4 段数据：缓存费率逐段删除仍在 25~30 万，但 fresh 与每请求此消彼长
+    // （fresh 从 2.5 万到 8 万拟合误差几乎一样），留一交叉验证 1.67。
     struct Coef {
         let fresh: Double?      // 每 1% 额度能买多少 fresh 输入 token；nil = 不计费
         let cached: Double?     // 每 1% 能买多少缓存输入 token
@@ -45,7 +46,7 @@ enum Budget {
         "gpt-5.5":       Coef(fresh: 49_419, cached: 572_717, output: 15_782, request: 0.0282),
         "gpt-5.6-terra": Coef(fresh: 47_223, cached: 547_263, output: 15_080, request: 0.0295),
         "gpt-5.6-luna":  Coef(fresh: nil,    cached: nil,     output: nil,    request: 0.0),
-        "gpt-6-astra":   Coef(fresh: 14_545, cached: 168_559, output:  2_364, request: 0.2615),
+        "gpt-6-astra":   Coef(fresh: 35_094, cached: 250_428, output:  2_318, request: 0.5632),
     ]
     static let fallback = Coef(fresh: 42_500, cached: 492_537, output: 13_572, request: 0.0328)
     /// 缓存比 fresh 便宜几倍（界面文案用，由系数算出，不写死）

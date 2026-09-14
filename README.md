@@ -23,8 +23,8 @@ two questions that actually change what you do next:
 - **What is that spend made of** — new input, output, or the per-request floor?
 - **What would the same work have cost on a different model?**
 
-The second one needs a cost model. Getting one took **641 controlled API calls
-across 32 experiment cells**, changing one variable at a time. The raw trials and
+The second one needs a cost model. Getting one took **655 controlled API calls
+across 33 experiment cells**, changing one variable at a time. The raw trials and
 the harness are in [`research/`](research/).
 
 ## Install
@@ -74,11 +74,11 @@ because it emits more reasoning tokens; across five levels the multiplier stayed
 at 1.0 ± 0.1. In practice Sol at max effort still undercuts Astra at low effort,
 so **turn the effort dial up before reaching for a bigger model.**
 
-**Astra needs more than one number.** Relative to Sol its fresh input costs
-~2.9× and its output ~5.7× (its per-request floor looks like ~8×, but that
-figure leans on an assumed cached rate), so any single "Astra is N×" figure
-shifts with how much the model talks. Short, decisive Astra work is
-affordable; long reasoning chains on it are not.
+**Astra needs more than one number.** Relative to Sol its cached input costs
+~2× and its output ~6×, while its per-request floor is an order of magnitude
+higher, so any single "Astra is N×" figure shifts with how much the model talks.
+A few substantial Astra requests are affordable; long reasoning chains and
+chatty tool loops on it are not.
 
 ## Measured coefficients
 
@@ -90,14 +90,14 @@ Each model gets four coefficients instead of one multiplier:
 | `gpt-5.5` | 49,419 tok | 572,717 tok | 15,782 tok | 0.0282% |
 | `gpt-5.6-terra` | 47,223 tok | 547,263 tok | 15,080 tok | 0.0295% |
 | `gpt-5.6-luna` | free | free | free | free |
-| `gpt-6-astra` | 14,545 tok | 168,559 tok\* | 2,364 tok | 0.2615%\* |
+| `gpt-6-astra` | 35,094 tok\* | 250,428 tok | 2,318 tok | 0.5632%\* |
 
-Sol's four are fitted jointly on all 641 measured calls with non-negative least
-squares ([`research/refit.py`](research/refit.py)). 5.5 and Terra are
+Sol's four are fitted jointly on every Sol measurement with non-negative
+least squares ([`research/refit.py`](research/refit.py)). 5.5 and Terra are
 indistinguishable from Sol at this resolution and are scaled from it. \*Astra's
-cached rate cannot be identified from the current data; it is set at Sol's
-cached-to-fresh ratio, and Astra's per-request figure moves with that choice. A
-dedicated `astra/bigctx` cell is defined but not yet run.
+cached rate comes from a dedicated 120K-context cell; how the rest splits between
+fresh input and the per-request floor is still loose (fresh anywhere from 25K to
+80K fits almost equally well).
 
 <details>
 <summary><b>How this was measured, and where it's shaky</b></summary>
@@ -114,7 +114,9 @@ These numbers are only worth something if you know their error bars.
   over-predicted (88% vs. 82%). The table below shows where each version lands.
 - **5.5 and Terra are indistinguishable from Sol** at this resolution. Their
   error bars overlap; treat all three as ≈1×.
-- **Astra and Luna rest on ~30–40 calls each.** Read them as order-of-magnitude.
+- **Astra rests on four segments (~100 calls); Luna on 30.** Astra's cached and
+  output rates hold up when any one segment is dropped; its fresh-vs-per-request
+  split does not. Read Luna, and that part of Astra, as order-of-magnitude.
 
 **Known limits of the method**
 
