@@ -238,6 +238,10 @@ def scan_rollout(path):
             tok[k] += last.get(k, 0) or 0
         ctx = (p.get("info") or {}).get("model_context_window") or ctx
         rl = p.get("rate_limits") or {}
+        # 只认 Codex 自己的额度读数。别的限额（base_model_inference / premium）没有 5 小时
+        # 窗口，若被当成「最新读数」，预算检查会退回起始值，上限就失效了。
+        if rl.get("limit_id") not in (None, "codex"):
+            rl = {}
         ts = d.get("timestamp") or ""
         for slot in ("primary", "secondary"):
             sl = rl.get(slot) or {}

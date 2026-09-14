@@ -236,7 +236,12 @@ enum Budget {
                 let ts = parseDate(obj["timestamp"] as? String ?? "")
 
                 var got: [Double: Window] = [:]
-                if let rl = payload["rate_limits"] as? [String: Any] {
+                // 只认 Codex 自己的额度读数。同一类事件里也会出现别的限额：
+                // base_model_inference（limit_name 为 gpt-reserve，周窗口恒为 0%、重置时间总在
+                // 事件 7 天后）、premium（没有窗口）。它们不是独立额度池 —— 主池 5 小时读数
+                // 照样跟着这些请求涨 —— 当成池子会把请求排除在估算之外。读数忽略，用量照算。
+                if let rl = payload["rate_limits"] as? [String: Any],
+                   (rl["limit_id"] as? String).map({ $0 == "codex" }) ?? true {
                     for slot in ["primary", "secondary"] {
                         guard let w = rl[slot] as? [String: Any],
                               let mins = w["window_minutes"] as? Double,

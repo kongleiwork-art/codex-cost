@@ -62,12 +62,12 @@ class Session:
         self.lines.append(json.dumps({"timestamp": iso(t), **obj}))
         self.last = max(self.last, t)
 
-    def tokens(self, t, use, limits):
+    def tokens(self, t, use, limits, limit_id="codex"):
         """use=None 就是只带额度读数的空事件（会话恢复、额度刷新时 Codex 会写）"""
         self.add(t, {"type": "event_msg",
                      "payload": {"type": "token_count",
                                  "info": {"last_token_usage": use} if use else None,
-                                 "rate_limits": {"limit_id": "codex", **limits}}})
+                                 "rate_limits": {"limit_id": limit_id, **limits}}})
 
     def close(self):
         with open(self.path, "w", encoding="utf-8") as f:
@@ -166,7 +166,30 @@ def expired_pool(root, now):
             "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 8}}
 
 
-SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool)}
+def other_limit(root, now):
+    """同一个会话里夹着 limit_id 不是 codex 的读数（09-14 实测：base_model_inference，
+    limit_name 为 gpt-reserve，周窗口 0%、重置时间总在事件 7 天后；premium 连窗口都没有）。
+    它们不是独立额度池 —— 主池 5 小时读数照样跟着这些请求涨 —— 读数忽略，用量照算。
+    修复前每条都被当成一个新池子，请求被排除在 5 小时估算之外。"""
+    r5, rw = now + 3 * H, now + 5 * 24 * H
+    s, n = Session(root, now - 2 * H, "gpt-5.6-sol"), 20
+    for i in range(n):
+        t = now - 1.9 * H + i * 300
+        if i % 5 == 2:
+            s.tokens(t, usage(i), {"primary": window(10080, 0, t + 7 * 24 * H)},
+                     limit_id="base_model_inference")
+        elif i == 9:
+            s.tokens(t, usage(i), {}, limit_id="premium")
+        else:
+            s.tokens(t, usage(i), {"primary": window(300, ramp(3, 14, i, n), r5),
+                                   "secondary": window(10080, ramp(20, 22, i, n), rw)})
+    s.close()
+    return {"requests": 20, "five_hour": 14, "weekly": 22, "pools": [], "binding": 22,
+            "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 20}}
+
+
+SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool,
+                                     other_limit)}
 
 
 def build(out_dir, now=None):

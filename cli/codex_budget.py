@@ -91,6 +91,10 @@ def parse(path):
             # 额度读数要先收，且与有没有用量无关 —— 只带 rate_limits 的事件
             # 往往正是最新的一条读数，丢了它会把额度读成陈旧值。
             rl = p.get("rate_limits") or {}
+            # 只认 Codex 自己的额度读数；其它限额（base_model_inference / premium）读数
+            # 忽略、用量照算 —— 原因见 Sources/Budget.swift
+            if rl.get("limit_id") not in (None, "codex"):
+                rl = {}
             for slot in ("primary", "secondary"):
                 sl = rl.get(slot) or {}
                 if sl.get("window_minutes") and sl.get("used_percent") is not None:
