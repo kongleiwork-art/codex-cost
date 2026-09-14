@@ -81,14 +81,15 @@ enum L {
         s("输入任务，回车发送（模型只定一次）",
           "Type a task, Enter to send (model locked once)")
     }
-    static var workdirLabel: String { s("工作目录", "Working directory") }
+    static var workdirLabel: String {
+        s("工作目录（必填，不能是主目录）", "Working directory (required, not ~)")
+    }
     static var routing: String { s("路由中…", "Routing…") }
-    static var launching: String { s("启动中…", "Launching…") }
     static func routedTo(_ model: String) -> String {
-        s("已选 \(model)", "Chose \(model)")
+        s("已选 \(model)，正在打开终端…", "Chose \(model), opening Terminal…")
     }
     static func taskStarted(_ model: String) -> String {
-        s("已用 \(model) 开新会话", "Started a new session on \(model)")
+        s("已在终端用 \(model) 开新会话", "Opened a new \(model) session in Terminal")
     }
     static var taskFailed: String { s("启动失败", "Launch failed") }
     static var codexMissing: String {
@@ -98,8 +99,10 @@ enum L {
     static var workdirMissing: String {
         s("工作目录不存在", "Working directory does not exist")
     }
-    static var sendTask: String { s("发送", "Send") }
-    static var collapse: String { s("收起", "Collapse") }
+    static var workdirIsHome: String {
+        s("工作目录不能是整个主目录，请选具体项目",
+          "Pick a project folder, not your whole home directory")
+    }
     static var modelLockedOnce: String {
         s("会话中途不切模型，保缓存", "Model stays locked mid-session to keep cache")
     }

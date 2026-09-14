@@ -20,7 +20,6 @@ final class Store: ObservableObject {
     @Published var busy = false
     @Published var launchStatus: String?
     @Published var lastRoutedModel: String?
-    @Published var statusBusyPhase: String?   // routing / launching
 
     private var timer: Timer?
 
@@ -51,20 +50,23 @@ final class Store: ObservableObject {
         let task = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !task.isEmpty, !busy else { return }
         busy = true
-        statusBusyPhase = L.routing
         launchStatus = L.routing
+        onUpdate?()
         let dir = workdir
         Task.detached(priority: .userInitiated) {
-            // 先路由（本地规则，可能 Luna），再 exec —— 都在 TaskLaunch.run 里
-            let outcome = TaskLaunch.run(task: task, workdir: dir, allowLuna: true)
+            // 路由可能要问 Luna（最多 90 秒），放后台；打开终端很快，回主线程做
+            let d = Router.route(task: task)
             await MainActor.run {
+                self.lastRoutedModel = d.model
+                self.launchStatus = L.routedTo(Router.short(d.model))
+                self.onUpdate?()
+                let failure = TaskLaunch.open(model: d.model, workdir: dir, task: task)
                 self.busy = false
-                self.statusBusyPhase = nil
-                self.lastRoutedModel = outcome.model
-                self.launchStatus = outcome.message
-                if outcome.ok {
+                if let failure {
+                    self.launchStatus = failure.message
+                } else {
+                    self.launchStatus = L.taskStarted(Router.short(d.model)) + " · " + d.reason
                     self.taskText = ""
-                    self.refresh()
                 }
                 self.onUpdate?()
             }
@@ -211,7 +213,8 @@ struct Expanded: View {
     let error: String?
     let lastRefresh: Date
     var store: Store? = nil
-    var onCollapse: (() -> Void)? = nil
+    /// 点输入区时请求键盘焦点（刘海窗默认不抢焦点）
+    var onFocusRequest: (() -> Void)? = nil
     let onRefresh: () -> Void
 
     var body: some View {
@@ -307,19 +310,11 @@ struct Expanded: View {
                     .font(.system(size: 9.5))
                     .foregroundStyle(.white.opacity(0.32))
             }
-            if onCollapse != nil {
-                HStack {
-                    Spacer()
-                    Button(L.collapse) { onCollapse?() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.white.opacity(0.40))
-                }
-            }
         }
         .padding(.bottom, 12)
-        // 点输入区不要触发外层折叠手势
-        .onTapGesture {}
+        // 点输入区：请求键盘焦点，同时吞掉这次点击，不触发外层的折叠手势
+        .contentShape(Rectangle())
+        .onTapGesture { onFocusRequest?() }
     }
 
     @ViewBuilder func sep() -> some View {
@@ -530,8 +525,10 @@ struct Root: View {
     @ObservedObject var store: Store
     let notchWidth: CGFloat
     let onResize: (Bool) -> Void
-    /// 展开时允许刘海窗变成 key，否则 TextField 收不到键盘
+    /// 展开时允许刘海窗成为 key（折叠时不允许）；不主动抢焦点
     var onKeyFocus: ((Bool) -> Void)? = nil
+    /// 点进任务输入区时才真正拿键盘
+    var onFocusRequest: (() -> Void)? = nil
     @State private var expanded = CommandLine.arguments.contains("--expanded")
 
     var body: some View {
@@ -540,11 +537,7 @@ struct Root: View {
                 Expanded(snap: store.snap, error: store.error,
                          lastRefresh: store.lastRefresh,
                          store: store,
-                         onCollapse: {
-                             expanded = false
-                             onResize(false)
-                             onKeyFocus?(false)
-                         }) { store.refresh() }
+                         onFocusRequest: onFocusRequest) { store.refresh() }
             } else {
                 Collapsed(snap: store.snap, notchWidth: notchWidth,
                           busy: store.busy, routed: store.lastRoutedModel)
@@ -564,12 +557,9 @@ struct Root: View {
             GlassPanel(shape: shape, expanded: expanded)
         }
         .onTapGesture {
-            // 展开态靠「收起」按钮折叠，避免点输入框时整窗收起
-            guard !expanded else { return }
-            expanded = true
-            onResize(true)
-            onKeyFocus?(true)
-            store.refresh()
+            // 输入区自己吞掉点击，所以点面板其它地方照旧折叠
+            expanded.toggle(); onResize(expanded); onKeyFocus?(expanded)
+            if expanded { store.refresh() }
         }
         .contextMenu {
             Button(L.refresh) { store.refresh() }
@@ -700,9 +690,12 @@ extension Expanded {
     /// 不能写死或按行数估：独立额度池、池子说明、估算偏差提示都是可有可无的行，
     /// 少算一行，内容就会把顶部的模型和总数挤出窗口。
     @MainActor
-    static func fittingHeight(_ snap: Snapshot?, error: String? = nil) -> CGFloat {
+    static func fittingHeight(_ snap: Snapshot?, error: String? = nil,
+                              store: Store? = nil) -> CGFloat {
+        // 传 store 才会按真实的任务输入区排版（多了工作目录一行、状态行）；
+        // 不传就是离屏渲染用的占位版，两者高度不同
         let host = NSHostingController(rootView:
-            Expanded(snap: snap, error: error, lastRefresh: Date()) {}
+            Expanded(snap: snap, error: error, lastRefresh: Date(), store: store) {}
                 .frame(width: width))
         let h = host.sizeThatFits(in: CGSize(width: width, height: 4000)).height
         // 量出来接近上限说明有纵向可伸缩的内容，量不准 —— 退回旧的固定高度
@@ -721,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     var expandedSize: NSSize {
         NSSize(width: Expanded.width,
-               height: Expanded.fittingHeight(store?.snap, error: store?.error))
+               height: Expanded.fittingHeight(store?.snap, error: store?.error, store: store))
     }
 
     var statusBar: StatusBarController?
@@ -754,11 +747,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.place(expanded ? self.expandedSize : self.collapsedSize, animated: true)
         },
                         onKeyFocus: { [weak self] allow in
+            // 只放开「可以成为 key」，不主动 makeKey：展开看一眼额度，不该抢走
+            // 你正在打字的那个应用的焦点。点进输入区时再拿（onFocusRequest）。
+            self?.window.allowsKey = allow
+        },
+                        onFocusRequest: { [weak self] in
             guard let self else { return }
-            self.window.allowsKey = allow
-            if allow {
-                self.window.makeKeyAndOrderFront(nil)
+            self.window.allowsKey = true
+            if #available(macOS 14.0, *) {
+                NSApp.activate()
+            } else {
+                NSApp.activate(ignoringOtherApps: true)
             }
+            self.window.makeKeyAndOrderFront(nil)
         })
         // 展开着的时候出现或消失一个独立额度池，窗口高度要跟着变
         store.onUpdate = { [weak self] in
@@ -804,6 +805,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 enum Launcher {
     @MainActor static func main() {
+        // --route <任务>：只跑本地规则并打印 JSON，不问 Luna、不启动任务。
+        // tests/test_router.py 拿它和 cli/codex_route.py 核对两份规则一致。
+        if let i = CommandLine.arguments.firstIndex(of: "--route"),
+           i + 1 < CommandLine.arguments.count {
+            let d = Router.localRules(task: CommandLine.arguments[i + 1])
+            let obj: [String: Any] = ["model": d.model, "confidence": d.confidence,
+                                      "hits": d.hits]
+            let data = try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
+            print(String(data: data, encoding: .utf8)!)
+            exit(0)
+        }
         // --dump 必须在 NSApplication 启动前处理：一旦 app.run() 起来，
         // 这是个常驻 GUI 进程，不会退出（之前误以为是卡死）。
         // --social <路径>：生成 1280×640 社交预览封面
