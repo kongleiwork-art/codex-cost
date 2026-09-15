@@ -35,14 +35,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RESULTS = os.path.join(HERE, "results.jsonl")
 WIN_5H = "300"
 
-# 仓库当前在用的系数（Sources/Budget.swift / cli/codex_budget.py）
-SHIPPED = {
-    "gpt-5.6-sol":   (42_500, 492_537, 13_572, 0.0328),
-    "gpt-5.5":       (49_419, 572_717, 15_782, 0.0282),
-    "gpt-5.6-terra": (47_223, 547_263, 15_080, 0.0295),
-    "gpt-6-astra":   (35_094, 250_428,  2_318, 0.5632),
-    "gpt-5.6-luna":  None,
-}
+# 仓库当前在用的系数，唯一来源是 coefficients.json（app 和 CLI 读的也是它）
+def _load_shipped():
+    with open(os.path.join(HERE, "coefficients.json"), encoding="utf-8") as f:
+        models = json.load(f)["models"]
+    return {m: None if c.get("free") else (c["fresh"], c["cached"], c["output"], c["request"])
+            for m, c in models.items()}
+
+
+SHIPPED = _load_shipped()
 # used_percent 只有 1% 分辨率。均匀量化误差的标准差是 1/sqrt(12)，
 # 任何 RMS 低于这个数的「拟合优度差异」都是在拟合噪声，不必当真。
 NOISE_FLOOR = 1 / math.sqrt(12)

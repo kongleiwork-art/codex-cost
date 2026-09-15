@@ -711,7 +711,7 @@ struct Expanded: View {
 
     @ViewBuilder func alternatives(_ s: Snapshot) -> some View {
         SectionLabel(t: L.altSection)
-        let rows = Budget.coef.keys.map { ($0, s.counterfactual($0)) }.sorted { $0.1 < $1.1 }
+        let rows = Budget.counterfactualModels.map { ($0, s.counterfactual($0)) }.sorted { $0.1 < $1.1 }
         let mx = max(rows.map(\.1).max() ?? 1, 0.0001)
         VStack(spacing: 8) {
             ForEach(rows, id: \.0) { k, v in

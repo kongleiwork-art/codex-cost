@@ -38,14 +38,22 @@ WIN_5H, WIN_WEEK = 300, 10080
 # RMS 0.84。req/* 与 ctx/* 把 fresh 和「每请求」拆开了：旧版 0.0819% 里大半其实是
 # fresh 成本。5.5 / terra 与 sol 分不出来，按 0.86× / 0.90× 缩放；astra 的缓存费率
 # 由 astra/bigctx 定下，fresh 与每请求的拆分仍不稳。
-COEF = {
-    "gpt-5.6-sol":   (42_500, 492_537, 13_572, 0.0328),
-    "gpt-5.5":       (49_419, 572_717, 15_782, 0.0282),   # 由 0.86× 缩放
-    "gpt-5.6-terra": (47_223, 547_263, 15_080, 0.0295),   # 由 0.90× 缩放
-    "gpt-5.6-luna":  (None,   None,    None,   0.0),      # 不计费
-    "gpt-6-astra":   (35_094, 250_428,  2_318, 0.5632),   # fresh/每请求拆分不稳
-}
-DEFAULT_COEF = COEF["gpt-5.6-sol"]
+# 数值只存在 research/coefficients.json（app 由它生成、refit 也读它）
+COEF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
+                         "research", "coefficients.json")
+
+
+def _load_coef():
+    with open(COEF_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    coef = {m: (None, None, None, 0.0) if c.get("free")
+            else (c["fresh"], c["cached"], c["output"], c["request"])
+            for m, c in data["models"].items()}
+    alts = [m for m, c in data["models"].items() if c.get("counterfactual", True)]
+    return coef, coef[data["fallback"]], alts
+
+
+COEF, DEFAULT_COEF, COUNTERFACTUAL = _load_coef()   # COUNTERFACTUAL：参加「全用一个模型」对照的模型
 UNCERTAIN = {"gpt-6-astra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"}
 
 def cost_pct(fresh, outside, requests, model, cached=0):
@@ -316,7 +324,7 @@ def report(per_model, total, n_sessions, quota, quota_ts, since_iso, current_mod
     to = sum(d["outside"] for d in per_model.values())
     tn = sum(d["requests"] for d in per_model.values())
     tc = sum(d["cached"] for d in per_model.values())
-    alt = {m: cost_pct(tf, to, tn, m, tc) for m in COEF}
+    alt = {m: cost_pct(tf, to, tn, m, tc) for m in COUNTERFACTUAL}
     print(f"\n\033[1m  同样这些活，全用一个模型的话\033[0m")
     for m, v in sorted(alt.items(), key=lambda kv: kv[1]):
         cur = "  \033[1m← 你现在用的\033[0m" if m == current_model else ""
@@ -398,7 +406,7 @@ def main():
                                            sum(d["outside"] for d in per_model.values()),
                                            sum(d["requests"] for d in per_model.values()), m,
                                            sum(d["cached"] for d in per_model.values()))
-                               for m in COEF},
+                               for m in COUNTERFACTUAL},
             "quota": {str(k): v for k, v in quota.items()},
             "quota_read_at": quota_ts,
             "pools": [{"label": "/".join(sorted(v["models"])), "window": v["window"],

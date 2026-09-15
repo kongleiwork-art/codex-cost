@@ -40,15 +40,8 @@ enum Budget {
         let request: Double     // 每次请求的固定成本（%）
     }
 
-    // 5.5 / terra 与 sol 在现有分辨率下分不出来，按 0.86× / 0.90× 由 sol 缩放。
-    static let coef: [String: Coef] = [
-        "gpt-5.6-sol":   Coef(fresh: 42_500, cached: 492_537, output: 13_572, request: 0.0328),
-        "gpt-5.5":       Coef(fresh: 49_419, cached: 572_717, output: 15_782, request: 0.0282),
-        "gpt-5.6-terra": Coef(fresh: 47_223, cached: 547_263, output: 15_080, request: 0.0295),
-        "gpt-5.6-luna":  Coef(fresh: nil,    cached: nil,     output: nil,    request: 0.0),
-        "gpt-6-astra":   Coef(fresh: 35_094, cached: 250_428, output:  2_318, request: 0.5632),
-    ]
-    static let fallback = Coef(fresh: 42_500, cached: 492_537, output: 13_572, request: 0.0328)
+    // 系数表（coef、fallback、counterfactualModels）在 Sources/Coefficients.swift，
+    // 由 research/coefficients.json 生成。
     /// 缓存比 fresh 便宜几倍（界面文案用，由系数算出，不写死）
     static var cacheDiscount: Int {
         Int(((fallback.cached ?? 0) / (fallback.fresh ?? 1)).rounded())

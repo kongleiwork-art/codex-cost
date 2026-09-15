@@ -1,0 +1,13 @@
+{
+  "version": "v4",
+  "updated": "2026-09-15",
+  "about": "每 1% 的 5 小时额度能买多少 token，以及每次请求的固定成本（%）。唯一来源：改完运行 python3 research/sync_coefficients.py，它会生成 Sources/Coefficients.swift 并更新两份 README 的系数表；refit.py 和 cli/codex_budget.py 直接读这个文件。",
+  "fallback": "gpt-5.6-sol",
+  "models": {
+    "gpt-5.6-sol":   {"fresh": 42500, "cached": 492537, "output": 13572, "request": 0.0328, "counterfactual": true},
+    "gpt-5.5":       {"fresh": 49419, "cached": 572717, "output": 15782, "request": 0.0282, "counterfactual": true},
+    "gpt-5.6-terra": {"fresh": 47223, "cached": 547263, "output": 15080, "request": 0.0295, "counterfactual": true},
+    "gpt-5.6-luna":  {"free": true, "counterfactual": true},
+    "gpt-6-astra":   {"fresh": 35094, "cached": 250428, "output": 2318, "request": 0.5632, "counterfactual": true}
+  }
+}

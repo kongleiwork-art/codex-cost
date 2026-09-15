@@ -62,7 +62,7 @@ final class Alerts {
         // 有更便宜的模型能明显省，就一并给出建议 —— 把研究结论变成可执行的话
         if let cur = r.currentModel, let curCost = Budget.coef[cur],
            curCost.fresh != nil {
-            let alt = Budget.coef.keys
+            let alt = Budget.counterfactualModels
                 .map { ($0, r.counterfactual($0)) }
                 .filter { $0.1 < r.spent * 0.7 && $0.1 > 0 }
                 .min { $0.1 < $1.1 }
