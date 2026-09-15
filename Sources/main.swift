@@ -113,6 +113,14 @@ func fmtLeft(_ ts: Double?) -> String {
     if m >= 60 { return "\(m / 60)h\(String(format: "%02d", m % 60))m" }
     return "\(m)m"
 }
+/// 空闲时长：72 分钟 → 「1 小时 12 分钟」/「1h12m」
+func fmtIdle(_ minutes: Double) -> String {
+    let m = Int(minutes)
+    if m >= 60 {
+        return L.isZH ? "\(m / 60) 小时 \(m % 60) 分钟" : "\(m / 60)h\(String(format: "%02d", m % 60))m"
+    }
+    return L.isZH ? "\(m) 分钟" : "\(m)m"
+}
 func shortModel(_ m: String?) -> String {
     (m ?? "-").replacingOccurrences(of: "gpt-", with: "")
 }
@@ -426,6 +434,7 @@ struct Expanded: View {
             } else if let s = snap {
                 header(s)
                 composition(s)
+                cacheHint(s)
                 sep()
                 quota(s)
                 if !s.byModel.isEmpty { sep(); models(s) }
@@ -520,6 +529,26 @@ struct Expanded: View {
                     .foregroundStyle(.white.opacity(0.32))
             }
             .padding(.top, 6)
+        }
+    }
+
+    /// 空闲太久：接着这段会话，缓存可能已经失效，整段上下文要按新增输入重读
+    @ViewBuilder func cacheHint(_ s: Snapshot) -> some View {
+        if let lr = s.lastRequest, let hint = lr.cacheHint {
+            let likely = hint == .likely
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Image(systemName: "clock.arrow.circlepath").font(.system(size: 10))
+                    Text(L.lastRequestIdle(fmtIdle(lr.idleMinutes), fmtTokens(lr.context)))
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(likely ? Palette.floor.opacity(0.95) : .white.opacity(0.62))
+                Text(L.cacheResume(likely: likely, miss: lr.resumeMissPct, hit: lr.resumeHitPct))
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 10)
         }
     }
 
@@ -968,6 +997,13 @@ enum Launcher {
                          "window": win($0.window)] as [String: Any]
                     },
                     "binding": r.binding.map { $0.usedPercent as Any } ?? NSNull(),
+                    "last_request": r.lastRequest.map { lr -> Any in
+                        ["model": lr.model, "context": lr.context,
+                         "idle_minutes": lr.idleMinutes,
+                         "resume_miss_pct": lr.resumeMissPct, "resume_hit_pct": lr.resumeHitPct,
+                         "cache_hint": lr.cacheHint.map { $0.rawValue as Any } ?? NSNull()]
+                            as [String: Any]
+                    } ?? NSNull(),
                 ]
                 let data = try! JSONSerialization.data(withJSONObject: obj,
                                                        options: [.sortedKeys, .prettyPrinted])
@@ -995,6 +1031,11 @@ enum Launcher {
                       + "  \(p.requests) 次请求")
             }
             if let b = r.binding { print(String(format: "binding %.0f%%", b.usedPercent)) }
+            if let lr = r.lastRequest {
+                print("last   \(lr.model)  context \(lr.context)  idle \(Int(lr.idleMinutes))m  "
+                      + String(format: "resume %.2f%% / %.2f%%  ", lr.resumeMissPct, lr.resumeHitPct)
+                      + "hint \(lr.cacheHint?.rawValue ?? "-")")
+            }
             exit(0)
         }
         let app = NSApplication.shared

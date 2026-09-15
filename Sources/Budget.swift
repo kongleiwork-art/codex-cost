@@ -69,6 +69,33 @@ enum Budget {
     /// 主额度之外的独立额度池 —— 周窗口的重置时间与主池不同。
     /// 例如主周额度打满后 Codex 切去的 gpt-reserve。
     struct Pool { var label: String; var window: Window; var requests: Int }
+    /// 最近一次请求。用来提示「空闲太久，缓存可能已经失效」——
+    /// 失效后接着用，整段上下文要按新增输入重读（sol 上约贵 12 倍）。
+    struct LastRequest {
+        var ts: Date
+        var model: String
+        var context: Int        // 这次请求的输入 token（含缓存），也就是接着用时要重读的上下文
+        var idleMinutes: Double { Date().timeIntervalSince(ts) / 60 }
+        /// 缓存还在时，接着用一次的代价（%）
+        var resumeHitPct: Double {
+            Budget.cost(fresh: 0, cached: context, output: 0, requests: 1, model: model)
+        }
+        /// 缓存已失效时的代价：整段上下文按新增输入重读
+        var resumeMissPct: Double {
+            Budget.cost(fresh: context, cached: 0, output: 0, requests: 1, model: model)
+        }
+        enum Hint: String { case maybe, likely }
+        /// 空闲越久越容易失效：实测 10–30 分钟约四分之一，超过 1 小时约九成（见 README）。
+        /// 上下文小、重读也不贵，或者空闲超过半天（多半已经换了事做），都不提示。
+        /// cli/codex_budget.py 的 last_request_info 用同一套规则。
+        var cacheHint: Hint? {
+            guard context >= 30_000, resumeMissPct >= 0.5 else { return nil }
+            let m = idleMinutes
+            if m >= 60 && m <= 12 * 60 { return .likely }
+            if m >= 10 && m < 60 { return .maybe }
+            return nil
+        }
+    }
     struct Result {
         var windowStart: Date
         var currentModel: String?
@@ -80,6 +107,7 @@ enum Budget {
         var firstEvent: Date?
         var lastEvent: Date?
         var otherPools: [Pool] = []
+        var lastRequest: LastRequest?
 
         /// 真正卡住你的那个窗口：5 小时与周额度里用得更满的那个。
         /// 周额度打满时，5 小时还剩多少都没用 —— 折叠态、菜单栏和提醒都该看这个。
@@ -200,7 +228,8 @@ enum Budget {
 
     private static func scan(_ url: URL, since: Date,
                             events: inout [UsageEvent],
-                            readings: inout [Reading]) -> Bool {
+                            readings: inout [Reading],
+                            latest: inout LastRequest?) -> Bool {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
         var model: String? = nil
         var touched = false
@@ -252,16 +281,20 @@ enum Budget {
                     readings.append(Reading(ts: ts, model: model ?? "?", windows: got))
                 }
 
-                guard let ts, ts >= since else { continue }
                 // info 为空的 token_count 不是一次真实请求 —— 会话启动、额度
                 // 刷新都会写这么一条。照计的话每条白加一次「每请求固定成本」。
                 let info = payload["info"] as? [String: Any] ?? [:]
-                guard let u = info["last_token_usage"] as? [String: Any],
+                guard let ts, let u = info["last_token_usage"] as? [String: Any],
                       !u.isEmpty else { continue }
                 let inp = u["input_tokens"] as? Int ?? 0
                 let cch = u["cached_input_tokens"] as? Int ?? 0
                 let outp = (u["output_tokens"] as? Int ?? 0)
                          + (u["reasoning_output_tokens"] as? Int ?? 0)
+                // 最近一次请求不受 5 小时窗口限制：空闲超过 5 小时回来，也要能提示缓存失效
+                if latest == nil || ts > latest!.ts {
+                    latest = LastRequest(ts: ts, model: model ?? "?", context: inp)
+                }
+                guard ts >= since else { continue }
                 events.append(UsageEvent(ts: ts, model: model ?? "?",
                                          fresh: max(0, inp - cch), cached: cch, output: outp,
                                          has5h: got[windowMinutes5h] != nil,
@@ -292,8 +325,11 @@ enum Budget {
         var events: [UsageEvent] = []
         var readings: [Reading] = []
         var sessions = 0
+        var latest: LastRequest? = nil
         for url in sessionFiles() {
-            if scan(url, since: since, events: &events, readings: &readings) { sessions += 1 }
+            if scan(url, since: since, events: &events, readings: &readings, latest: &latest) {
+                sessions += 1
+            }
         }
         readings.sort { $0.ts < $1.ts }
 
@@ -358,6 +394,7 @@ enum Budget {
             Pool(label: (poolModels[k] ?? []).sorted().joined(separator: "/"),
                  window: poolWin[k]!, requests: poolReq[k] ?? 0)
         }
+        r.lastRequest = latest
         return r
     }
 }

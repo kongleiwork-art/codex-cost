@@ -98,7 +98,8 @@ def normal(root, now):
                   "secondary": window(10080, ramp(41, 42, i, n2), rw)})
     s.close()
     return {"requests": 50, "five_hour": 12, "weekly": 42, "pools": [], "binding": 42,
-            "current_model": "gpt-5.6-terra", "models": {"gpt-5.6-sol": 36, "gpt-5.6-terra": 14}}
+            "current_model": "gpt-5.6-terra", "models": {"gpt-5.6-sol": 36, "gpt-5.6-terra": 14},
+            "cache_hint": None}
 
 
 def reserve(root, now):
@@ -188,8 +189,24 @@ def other_limit(root, now):
             "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 20}}
 
 
+def idle_big_context(root, now):
+    """大上下文会话空闲了一个多小时：缓存大概率已失效，要提示接着用得按新增输入重读。
+    最近一次请求不受 5 小时窗口限制；app 和 CLI 的提示档位、重读代价必须一致。"""
+    r5, rw = now + 2.0 * H, now + 3 * 24 * H
+    s, n = Session(root, now - 2.5 * H, "gpt-5.6-sol"), 20
+    for i in range(n):
+        s.tokens(now - 2.4 * H + i * 240, usage(i, fresh=2_400, cached=140_000),
+                 {"primary": window(300, ramp(5, 20, i, n), r5),
+                  "secondary": window(10080, ramp(30, 33, i, n), rw)})
+    s.close()
+    last = usage(n - 1, fresh=2_400, cached=140_000)     # 最后一次在约 68 分钟前
+    return {"requests": 20, "five_hour": 20, "weekly": 33, "pools": [], "binding": 33,
+            "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 20},
+            "cache_hint": "likely", "context": last["input_tokens"]}
+
+
 SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool,
-                                     other_limit)}
+                                     other_limit, idle_big_context)}
 
 
 def build(out_dir, now=None):

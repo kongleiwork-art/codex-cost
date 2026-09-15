@@ -47,6 +47,7 @@ package manager, no account, no API key.
 | **Counterfactual pricing** | The same tokens, priced on every model you could have used |
 | **Both quota windows** | 5-hour and weekly, with reset countdowns |
 | **Threshold alerts** | Notifies at 80% and 95% with burn rate, time left, and a cheaper model when one would help |
+| **Cache expiry hint** | Come back to a large session after 10+ idle minutes and the panel shows what resuming costs if the cache has expired |
 | **Menu-bar fallback** | Works on Macs without a notch |
 | **Usage history** | A second tab totals tokens from Codex, Claude Code and opencode by day, tool and model — from local logs only |
 | **Bilingual** | English / 中文, follows system language |
@@ -101,6 +102,14 @@ sessions still add up: one real session carrying ~150K of context across 148
 turns spent about half of its quota on cached input alone. *Still don't clear
 context to save quota* — rebuilding it costs full fresh price, about 12× worse.
 But a very long session is not free either.
+
+**Idle time is what expires the cache.** In this account's own sessions, a
+request sent within a minute of the previous one found its cache gone about 1%
+of the time; after 10–30 idle minutes, about a quarter of the time; after an
+hour, almost 9 times in 10. A miss re-bills the whole context as new input — on
+a 150K-token Sol session that is about 3.5% of the five-hour window instead of
+0.3%. Over 30 days, cache misses took about 11% of this account's quota, so the
+panel now warns you when you come back to a large session.
 
 **The per-request floor is small — what you pay for is what each request
 carries.** ~0.03% on Sol, so about 30 near-empty requests make 1% of the

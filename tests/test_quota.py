@@ -47,6 +47,9 @@ def view(d, spent_key):
         "models": {m: v["requests"] for m, v in (d.get("by_model") or {}).items()},
         "spent": d.get(spent_key, 0.0),
         "binding": d.get("binding"),
+        "cache_hint": (d.get("last_request") or {}).get("cache_hint"),
+        "context": (d.get("last_request") or {}).get("context"),
+        "resume_miss": (d.get("last_request") or {}).get("resume_miss_pct"),
     }
 
 
@@ -76,6 +79,12 @@ def scenario_test(name):
                 self.assertEqual(got[key], exp[key], f"{name} · {side} · {key}")
             if exp.get("five_hour_stale"):
                 self.assertTrue(got["five_hour_stale"], f"{name} · {side} · 5 小时窗口应标记为已重置")
+            for key in ("cache_hint", "context"):
+                if key in exp:
+                    self.assertEqual(got[key], exp[key], f"{name} · {side} · {key}")
+        if self.app[name]["resume_miss"] is not None or self.cli[name]["resume_miss"] is not None:
+            self.assertAlmostEqual(self.app[name]["resume_miss"], self.cli[name]["resume_miss"], places=6,
+                                   msg=f"{name} · app 与 CLI 的重读代价不一致")
         self.assertEqual(self.app[name]["binding"], exp["binding"], f"{name} · app · binding")
         self.assertAlmostEqual(self.app[name]["spent"], self.cli[name]["spent"], places=6,
                                msg=f"{name} · app 与 CLI 的估算不一致")
