@@ -76,37 +76,6 @@ enum L {
         s("换成 \(to) 可省约 \(Int(save))%", "Switching to \(to) would save about \(Int(save))%")
     }
 
-    // 刘海任务入口 / 路由
-    static var taskPlaceholder: String {
-        s("输入任务，回车发送（模型只定一次）",
-          "Type a task, Enter to send (model locked once)")
-    }
-    static var workdirLabel: String {
-        s("工作目录（必填，不能是主目录）", "Working directory (required, not ~)")
-    }
-    static var routing: String { s("路由中…", "Routing…") }
-    static func routedTo(_ model: String) -> String {
-        s("已选 \(model)，正在打开终端…", "Chose \(model), opening Terminal…")
-    }
-    static func taskStarted(_ model: String) -> String {
-        s("已在终端用 \(model) 开新会话", "Opened a new \(model) session in Terminal")
-    }
-    static var taskFailed: String { s("启动失败", "Launch failed") }
-    static var codexMissing: String {
-        s("找不到 codex 命令，请先安装 Codex CLI",
-          "codex CLI not found — install it first")
-    }
-    static var workdirMissing: String {
-        s("工作目录不存在", "Working directory does not exist")
-    }
-    static var workdirIsHome: String {
-        s("工作目录不能是整个主目录，请选具体项目",
-          "Pick a project folder, not your whole home directory")
-    }
-    static var modelLockedOnce: String {
-        s("会话中途不切模型，保缓存", "Model stays locked mid-session to keep cache")
-    }
-
     // 历史用量
     static var tabQuota: String { s("当前额度", "Quota") }
     static var tabHistory: String { s("历史用量", "History") }

@@ -48,33 +48,25 @@ package manager, no account, no API key.
 | **Both quota windows** | 5-hour and weekly, with reset countdowns |
 | **Threshold alerts** | Notifies at 80% and 95% with burn rate, time left, and a cheaper model when one would help |
 | **Menu-bar fallback** | Works on Macs without a notch |
-| **Notch task entry** | Type a task at the top of the expanded panel; local rules (Luna if needed) pick a model once and open it in Terminal |
 | **Usage history** | A second tab totals tokens from Codex, Claude Code and opencode by day, tool and model — from local logs only |
 | **Bilingual** | English / 中文, follows system language |
 
-### Task routing (local rules + Luna)
+### Task routing (experimental, terminal only)
 
-Type a task and a project folder at the top of the expanded panel. codex-cost
-picks a model once and opens a new interactive Codex session on it in Terminal.
-
-1. **Local rules first** (0 tokens), from the task text only: keywords, plus
-   scope words like "everywhere" or "across". The state of your working tree is
-   not used — twelve uncommitted files say nothing about how hard the next task is.
-2. **Luna only when the rules have nothing to go on.** It reads the task text
-   and answers one word; if that fails, the task goes to `sol`. Luna cost nothing
-   in our measurements, so a failed judge costs time, not quota.
-3. **No mid-session switch.** The prompt cache is per model; switching halfway
-   re-bills the whole context as fresh input (~12× the cached price on Sol).
-4. **Your own approval settings apply.** The session runs in Terminal like any
-   Codex session you start yourself — no forced write access or auto-approval —
-   so you can watch it and step in.
-
-Preview a routing decision without starting anything:
+`cli/codex_route.py` suggests a model for a task: local keyword rules first, and
+Luna only when the rules have nothing to go on.
 
 ```bash
 python3 cli/codex_route.py --task "fix the flaky test" --json
 python3 cli/codex_route.py --task "..." --no-luna   # local rules only
 ```
+
+It is not wired into the app. A backtest over real Codex history
+([`research/backtest_routing.py`](research/backtest_routing.py)) found nothing to
+save: over 90% of quota went to sessions longer than 100 requests, the rules were
+confident about only about a third of that spend, and following them would have
+cost slightly more. Cache misses turned out to be the bigger lever — see
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Usage history
 

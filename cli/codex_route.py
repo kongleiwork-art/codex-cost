@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """codex_route — 开新任务时选一次模型：本地规则（0 token），规则没有依据时才问 Luna。
 
-与 Sources/Router.swift 是同一套规则，tests/test_router.py 核对两边一致。
-只看任务描述，不看工作区状态（原因见 Router.swift 顶部注释）。
+只看任务描述，不看工作区状态：十几个没提交的文件，说明不了下一个任务难不难。
+没有接进 app。按你自己的 Codex 历史回测，按难度选模型省不下额度
+（research/backtest_routing.py，docs/ROADMAP.md 门槛 G1）。
 
     python3 cli/codex_route.py --task "fix the flaky test" --json
     python3 cli/codex_route.py --task "..." --no-luna      # 只跑本地规则

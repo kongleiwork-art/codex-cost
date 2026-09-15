@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""路由规则回归：本地规则、Luna 判定与回退、Swift 与 Python 两份规则一致。
+"""路由规则回归：本地规则、Luna 判定与回退。
 
-    ./build.sh && python3 tests/test_router.py
+    python3 tests/test_router.py
 
 不会真的调用 codex：Luna 判定一律用假的 runner / luna_fn。
 """
@@ -134,38 +134,6 @@ class LunaJudgeCommand(unittest.TestCase):
                 returncode = 1
             return P()
         self.assertIsNone(R.luna_judge("x", codex="/bin/true", runner=fake))
-
-
-class SwiftParity(unittest.TestCase):
-    """Sources/Router.swift 与 cli/codex_route.py 必须给出同样的本地判定。"""
-    APP = os.path.join(ROOT, "codex-cost")
-    TASKS = [
-        "explain what this function does",
-        "改个字：把错别字修一下",
-        "implement a retry helper and add unit tests",
-        "redesign the architecture and migrate across the modules",
-        "do the thing",
-        "rename getUser to fetchUser everywhere",
-        "implement OAuth token refresh across services",
-        "check the latest prefix in the address padding",
-        "fixes the failing tests",
-        "fix typo in README",
-        "实现支付回调的幂等处理，所有文件都要改",
-        "design a new OAuth flow for the mobile app",
-        "x" * 450,
-    ]
-
-    @unittest.skipUnless(os.path.exists(APP), "先跑 ./build.sh")
-    def test_same_decisions(self):
-        for t in self.TASKS:
-            with self.subTest(task=t[:40]):
-                p = subprocess.run([self.APP, "--route", t], capture_output=True,
-                                   text=True, timeout=30)
-                self.assertEqual(p.returncode, 0, p.stderr)
-                sw, py = json.loads(p.stdout), R.local_rules(t)
-                self.assertEqual(sw["model"], py["model"])
-                self.assertEqual(sw["hits"], py["hits"])
-                self.assertAlmostEqual(sw["confidence"], py["confidence"], places=9)
 
 
 if __name__ == "__main__":
