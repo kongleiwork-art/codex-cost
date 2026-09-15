@@ -7,3 +7,7 @@ CodexCost.app/
 # Python
 __pycache__/
 *.py[cod]
+
+# 实验
+research/sandbox/
+research/logs/
