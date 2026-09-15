@@ -1,7 +1,7 @@
 # codex-cost 路线图
 
 > 以后所有任务都从这份文档出发：动手前在这里挑一项，做完回来更新状态。
-> 最后更新：2026-09-15（第 5 版：0.5、1.2、1.3、2.5 已做）
+> 最后更新：2026-09-15（第 5 版：0.5、1.2、1.3、2.5 已做；CI 通过）
 
 ## 一句话
 
@@ -112,7 +112,7 @@
 | 0.2 | 未验证的钩子提交挪到 `feat/codex-hook` | `test/fixtures` 已删 | S | 已做 |
 | 0.3 | 实验目录归一（D5） | 作废结果收进 `research/invalid/`；日志和 `research/sandbox/` 不入库 | S | 已做 |
 | 0.4 | 系数只存一处 | `research/coefficients.json` 为唯一来源；refit 和 CLI 直接读；Swift 和 README 表格由测试核对一致。系数 v5 之前做 | M | 已做 |
-| 0.5 | 持续集成 | GitHub Actions（macOS）：构建 + 全部测试，PR 必须通过 | M | 已做（推送后在 GitHub Actions 看结果） |
+| 0.5 | 持续集成 | GitHub Actions（macOS）：构建 + 全部测试，PR 必须通过 | M | 已做（CI 通过） |
 | 0.6 | GitHub 封面 | 仓库 Settings → Social preview 上传 `docs/social-preview.png`（09-15 重新生成过，要传最新的） | S | 你来做（已做就勾掉） |
 
 ### 阶段 1 · 看得清：把核心面板收干净
@@ -165,4 +165,4 @@
 
 1. 2.2 对照组复测 → 2.3 缓存费率复核，定出系数 v5（需要额度，挑你不用 Codex 的时候）
 2. D4 展开面板上沿（等你定）
-3. 推送后确认 GitHub Actions 通过（0.5）；0.6 你来传封面
+3. 0.6 你来传封面
