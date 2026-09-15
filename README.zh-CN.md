@@ -188,6 +188,8 @@ docs/        截图，由 docs/render.sh 从固定样本生成
 
 ## 参与
 
+接下来的计划和待决定事项见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
 **最有价值的贡献是来自其它套餐和账号的实测数据** —— 现在这套系数只来自一个 Plus 账号。跑一下 `research/quota_probe.py`，把结果开个 issue 贴上来就行。
 
 改日志解析或成本模型之前先跑测试。它把同一批固定样本日志喂给 app 和 CLI（两边都认

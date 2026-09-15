@@ -278,6 +278,8 @@ docs/        screenshots, regenerated from fixtures by docs/render.sh
 
 ## Contributing
 
+
+Planned work and open decisions live in [docs/ROADMAP.md](docs/ROADMAP.md) (Chinese).
 Measurements from other plans and accounts are the most useful thing you could
 contribute — the coefficients here come from a single Plus account. Run
 `research/quota_probe.py` and open an issue with the output.
