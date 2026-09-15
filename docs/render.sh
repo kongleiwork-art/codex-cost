@@ -16,3 +16,12 @@ export CODEX_HOME="$TMP/normal"
 ./codex-cost --render "$OUT/panel-en.png" --expanded --lang en
 ./codex-cost --render "$OUT/panel-zh.png" --expanded --lang zh
 ./codex-cost --social "$OUT/social-preview.png" "$OUT/panel-en.png" --lang en
+
+# 「历史用量」页：tests/usage_fixtures.py 生成的一周演示数据（Codex、Claude Code、opencode）
+U="$TMP/usage"
+python3 tests/usage_fixtures.py "$U" >/dev/null
+(
+  export CODEX_HOME="$U/codex" CLAUDE_CONFIG_DIR="$U/claude" XDG_DATA_HOME="$U/xdg" CODEX_COST_DATA_DIR="$U/data"
+  ./codex-cost --render-history "$OUT/history-en.png" week --lang en
+  ./codex-cost --render-history "$OUT/history-zh.png" week --lang zh
+)

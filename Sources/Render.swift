@@ -132,4 +132,57 @@ enum Renderer {
         }
         exit(0)
     }
+
+    /// 「历史用量」页离屏出图。数据来自环境变量指向的目录（CODEX_HOME、CLAUDE_CONFIG_DIR、
+    /// XDG_DATA_HOME、CODEX_COST_DATA_DIR）；docs/render.sh 指向 tests/usage_fixtures.py
+    /// 生成的演示数据，不读你自己的日志。
+    @MainActor
+    static func history(to path: String, period: Usage.Period, scale: CGFloat = 2) {
+        let summary = Usage.summarize(Usage.loadRecords(), period: period)
+        let page = VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                ForEach(PanelTab.allCases, id: \.self) { t in
+                    Pill(text: t.label, selected: t == .history) {}
+                }
+                Spacer()
+            }
+            .padding(.bottom, 12)
+            HistoryView(summary: summary, period: period)
+        }
+        .padding(.horizontal, 17).padding(.top, 15).padding(.bottom, 11)
+        .frame(width: Expanded.width)
+        let height = ceil(NSHostingController(rootView: page)
+            .sizeThatFits(in: CGSize(width: Expanded.width, height: 4000)).height)
+        let content = ZStack(alignment: .top) {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(LinearGradient(colors: [Color(white: 0.13), Color(white: 0.03)],
+                                     startPoint: .top, endPoint: .bottom))
+            page
+        }
+        .frame(width: Expanded.width, height: height)
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(LinearGradient(colors: [.white.opacity(0.30), .white.opacity(0.08)],
+                                             startPoint: .top, endPoint: .bottom), lineWidth: 0.7)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .environment(\.colorScheme, .dark)
+
+        let r = ImageRenderer(content: content)
+        r.scale = scale
+        r.isOpaque = false
+        guard let cg = r.cgImage,
+              let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else {
+            FileHandle.standardError.write("渲染失败\n".data(using: .utf8)!)
+            exit(1)
+        }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+            print("已写出 \(path)  \(cg.width)x\(cg.height)")
+        } catch {
+            FileHandle.standardError.write("写文件失败：\(error)\n".data(using: .utf8)!)
+            exit(1)
+        }
+        exit(0)
+    }
 }

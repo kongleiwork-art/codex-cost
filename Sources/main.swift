@@ -220,7 +220,8 @@ struct PanelSwitch<Quota: View>: View {
             }
             .padding(.bottom, 12)
             if store.tab == .history {
-                HistoryView(store: store)
+                HistoryView(summary: store.usage, period: store.period,
+                            loading: store.usageLoading) { store.select(period: $0) }
             } else {
                 quota()
             }
@@ -228,19 +229,24 @@ struct PanelSwitch<Quota: View>: View {
     }
 }
 
+/// 「历史用量」页。只收数据不收 store，离屏渲染（README 截图）也能用。
 struct HistoryView: View {
-    @ObservedObject var store: Store
+    let summary: Usage.Summary?
+    let period: Usage.Period
+    var loading = false
+    /// 切换时段；离屏渲染不传
+    var onSelect: (Usage.Period) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 4) {
                 ForEach(Usage.Period.allCases, id: \.self) { p in
-                    Pill(text: p.label, selected: store.period == p) { store.select(period: p) }
+                    Pill(text: p.label, selected: period == p) { onSelect(p) }
                 }
                 Spacer()
-                if store.usageLoading { ProgressView().controlSize(.mini) }
+                if loading { ProgressView().controlSize(.mini) }
             }
-            if let s = store.usage {
+            if let s = summary {
                 content(s)
             } else {
                 Text(L.usageIndexing)
@@ -978,6 +984,15 @@ enum Launcher {
             let app = NSApplication.shared
             app.setActivationPolicy(.prohibited)
             Renderer.run(to: CommandLine.arguments[i + 1])
+        }
+        // --render-history <路径> [today|week|month|all]：「历史用量」页出图，README 截图用
+        if let i = CommandLine.arguments.firstIndex(of: "--render-history"),
+           i + 1 < CommandLine.arguments.count {
+            let app = NSApplication.shared
+            app.setActivationPolicy(.prohibited)
+            let args = CommandLine.arguments
+            let period = i + 2 < args.count ? (Usage.Period(rawValue: args[i + 2]) ?? .week) : .week
+            Renderer.history(to: args[i + 1], period: period)
         }
         if CommandLine.arguments.contains("--dump") {
             let r = Budget.compute()

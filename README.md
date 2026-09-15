@@ -74,6 +74,8 @@ cost slightly more. Cache misses turned out to be the bigger lever — see
 The **History** tab adds up every token this Mac has a local record of — today,
 7 days, 30 days or all time — split by tool and by model, with a daily bar chart.
 
+<img src="docs/history-en.png" width="380" alt="The expanded panel: token breakdown, both quota windows, per-model spend, and the same workload priced on every model">
+
 | Source | Where it reads | Deduplication |
 |---|---|---|
 | Codex (CLI and desktop) | `~/.codex/sessions`, `~/.codex/archived_sessions` | timestamp + token counts — forked and archived sessions copy events verbatim |
