@@ -107,12 +107,16 @@ context to save quota* — rebuilding it costs full fresh price, about 12× wors
 But a very long session is not free either.
 
 **Idle time is what expires the cache.** In this account's own sessions, a
-request sent within a minute of the previous one found its cache gone about 1%
-of the time; after 10–30 idle minutes, about a quarter of the time; after an
-hour, almost 9 times in 10. A miss re-bills the whole context as new input — on
+request sent within a minute of the previous one found its cache gone less than 1%
+of the time; after 10–30 idle minutes, more than a quarter of the time; after an
+hour, 9 times in 10. A miss re-bills the whole context as new input — on
 a 150K-token Sol session that is about 3.5% of the five-hour window instead of
 0.3%. Over 30 days, cache misses took about 11% of this account's quota, so the
 panel now warns you when you come back to a large session.
+
+**Changing reasoning effort mid-session resets the cache too.** Of the misses
+that came within five minutes of the previous request, nearly half followed an
+effort change. Settle the effort at the start of a long session, not halfway through.
 
 **The per-request floor is small — what you pay for is what each request
 carries.** ~0.03% on Sol, so about 30 near-empty requests make 1% of the
