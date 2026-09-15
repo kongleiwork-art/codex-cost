@@ -81,7 +81,8 @@ The **History** tab adds up every token this Mac has a local record of — today
 | opencode | `~/.local/share/opencode/opencode.db`, opened read-only | message id; opencode's own dollar cost is shown as-is |
 
 Codex totals are also converted to 5-hour-window equivalents with the coefficients
-above; Claude Code and opencode are shown in tokens only.
+above; Claude Code and opencode are shown in tokens only. Some early Codex sessions
+never recorded a model name; their tokens are listed as “Unknown model”.
 
 Cursor keeps a `tokenCount` field locally but it is always zero, and Gemini CLI and
 the ChatGPT / Claude chat apps keep no token counts at all — so they cannot be

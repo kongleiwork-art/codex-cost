@@ -295,6 +295,12 @@ struct HistoryView: View {
                 }
             }
             .padding(.top, 9)
+            if s.models.contains(where: { $0.model == "?" }) {
+                Text(L.usageUnknownNote)
+                    .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.32))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            }
         }
         if let first = s.firstDay {
             Text(L.usageSince(first))

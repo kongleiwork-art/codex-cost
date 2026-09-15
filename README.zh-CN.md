@@ -69,7 +69,7 @@ python3 cli/codex_route.py --task "..." --no-luna   # 只跑本地规则
 | Claude Code | `~/.claude/projects` | 消息 id，留输出最多的那遍 —— 一条回复在流式输出时会写好几遍，恢复的会话还会复制到新文件 |
 | opencode | `~/.local/share/opencode/opencode.db`，只读打开 | 消息 id；opencode 自带的美元费用原样显示 |
 
-Codex 的合计还会按上面的系数折合成「几个 5 小时额度」；Claude Code 和 opencode 只显示 token 数。
+Codex 的合计还会按上面的系数折合成「几个 5 小时额度」；Claude Code 和 opencode 只显示 token 数。有些早期的 Codex 会话日志里没记录模型名，这部分 token 列为「未知模型」。
 
 Cursor 本地虽有 `tokenCount` 字段，但全是 0；Gemini CLI 和 ChatGPT / Claude 的聊天应用本地根本没有 token 记录 —— 所以没法计入，面板上会注明。
 

@@ -99,6 +99,10 @@ enum L {
     static var usageTotal: String { s("合计", "Total") }
     static var usageByModel: String { s("按模型", "By model") }
     static var usageUnknownModel: String { s("未知模型", "Unknown model") }
+    static var usageUnknownNote: String {
+        s("「未知模型」来自日志里没记录模型名的会话，多是早期或走自定义 provider 的会话",
+          "“Unknown model” covers sessions whose logs never recorded a model name — mostly early or custom-provider sessions")
+    }
     static var usageEmpty: String { s("这段时间没有用量记录", "No usage in this period") }
     static var usageIndexing: String {
         s("正在建立索引，首次要扫描全部日志…", "Indexing logs — the first run scans everything…")
