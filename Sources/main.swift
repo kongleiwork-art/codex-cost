@@ -764,16 +764,30 @@ struct GlassPanel: View {
                 }
                 .overlay {
                     LinearGradient(stops: [
-                        .init(color: .white.opacity(0.055), location: 0.0),
-                        .init(color: .white.opacity(0.012), location: 0.4),
-                        .init(color: .clear, location: 0.7)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing)
+                        .init(color: .clear, location: 0.0),
+                        .init(color: .white.opacity(0.04), location: 0.12),
+                        .init(color: .white.opacity(0.012), location: 0.45),
+                        .init(color: .clear, location: 0.75)],
+                        startPoint: .top, endPoint: .bottomTrailing)
+                }
+                // 上沿接着刘海：先铺一段和刘海一样的纯黑，再过渡到玻璃。
+                // 刘海没有描边也没有高光，接缝处出现任何亮色都会把两块断开。
+                .overlay(alignment: .top) {
+                    LinearGradient(stops: [
+                        .init(color: .black, location: 0.0),
+                        .init(color: .black, location: 0.25),
+                        .init(color: .black.opacity(0), location: 1.0)],
+                        startPoint: .top, endPoint: .bottom)
+                        .frame(height: 56)
                 }
                 .overlay {
+                    // 边框顶端完全透明，往下才出现
                     shape.strokeBorder(
-                        LinearGradient(colors: [.white.opacity(0.30), .white.opacity(0.09),
-                                                .white.opacity(0.05)],
-                                       startPoint: .top, endPoint: .bottom), lineWidth: 0.7)
+                        LinearGradient(stops: [
+                            .init(color: .white.opacity(0), location: 0.0),
+                            .init(color: .white.opacity(0.16), location: 0.14),
+                            .init(color: .white.opacity(0.05), location: 1.0)],
+                            startPoint: .top, endPoint: .bottom), lineWidth: 0.7)
                 }
                 .clipShape(shape)
         } else {
