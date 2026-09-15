@@ -857,8 +857,7 @@ extension Expanded {
     @MainActor
     static func fittingHeight(_ snap: Snapshot?, error: String? = nil,
                               store: Store? = nil) -> CGFloat {
-        // 传 store 才会按真实的任务输入区排版（多了工作目录一行、状态行）；
-        // 不传就是离屏渲染用的占位版，两者高度不同
+        // 传 store 才会带上顶部的标签页；不传就是离屏渲染（README 截图）的版式
         let host = NSHostingController(rootView:
             Expanded(snap: snap, error: error, lastRefresh: Date(), store: store) {}
                 .frame(width: width))
@@ -918,6 +917,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.place(self.expandedSize, animated: true)
         }
         let host = NSHostingView(rootView: root)
+        // 窗口尺寸只由 place() 决定。默认的 sizingOptions 会让 NSHostingView 按内容去改窗口尺寸：
+        // 实测按排版量出 573pt、place 也给了 573pt，窗口最后却被撑到约 850pt，内容居中，
+        // 上下各空出一大截。
+        host.sizingOptions = []
         host.autoresizingMask = [.width, .height]
         window.contentView = host
         // --expanded：启动即展开。截图和录 demo 用 —— 程序化点击要辅助功能权限，
