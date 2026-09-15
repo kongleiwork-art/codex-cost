@@ -21,12 +21,28 @@ final class Store: ObservableObject {
     @Published var launchStatus: String?
     @Published var lastRoutedModel: String?
 
+    // 历史用量
+    // --history：启动即停在「历史用量」页，截图和录 demo 用（同 --expanded，免得要程序化点击）
+    @Published var tab: PanelTab = CommandLine.arguments.contains("--history") ? .history : .quota
+    @Published var period: Usage.Period = .week
+    @Published var usage: Usage.Summary?
+    @Published var usageLoading = false
+    private var usageRecords: [Usage.Record]?
+    private var usageTimer: Timer?
+
     private var timer: Timer?
 
     init() {
         refresh()
+        if tab == .history { refreshUsage() }
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
+        }
+        // 历史总账只在打开过「历史用量」之后才定时更新，平时不扫日志
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                if self?.usageRecords != nil { self?.refreshUsage() }
+            }
         }
     }
 
@@ -41,6 +57,34 @@ final class Store: ObservableObject {
                     Alerts.shared.check(r)
                 }
                 self.lastRefresh = Date()
+                self.onUpdate?()
+            }
+        }
+    }
+
+    func select(tab t: PanelTab) {
+        tab = t
+        if t == .history && usageRecords == nil { refreshUsage() }
+        onUpdate?()
+    }
+
+    func select(period p: Usage.Period) {
+        period = p
+        if let recs = usageRecords { usage = Usage.summarize(recs, period: p) }
+        onUpdate?()
+    }
+
+    /// 更新索引、重新汇总。首次要扫全部日志，放后台。
+    func refreshUsage() {
+        guard !usageLoading else { return }
+        usageLoading = true
+        onUpdate?()
+        Task.detached(priority: .utility) {
+            let recs = Usage.loadRecords()
+            await MainActor.run {
+                self.usageRecords = recs
+                self.usage = Usage.summarize(recs, period: self.period)
+                self.usageLoading = false
                 self.onUpdate?()
             }
         }
@@ -90,6 +134,7 @@ enum Palette {
 }
 
 func fmtTokens(_ n: Int) -> String {
+    if n >= 1_000_000_000 { return String(format: "%.2fB", Double(n) / 1_000_000_000) }
     if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
     if n >= 1_000 { return String(format: "%.0fK", Double(n) / 1_000) }
     return "\(n)"
@@ -150,6 +195,191 @@ struct SectionLabel: View {
     var body: some View {
         Text(t).font(.system(size: 11))
             .foregroundStyle(.white.opacity(0.40))
+    }
+}
+
+// MARK: 历史用量
+
+enum PanelTab: CaseIterable {
+    case quota, history
+    var label: String { self == .quota ? L.tabQuota : L.tabHistory }
+}
+
+extension Usage.Period {
+    var label: String {
+        switch self {
+        case .today: return L.periodToday
+        case .week:  return L.periodWeek
+        case .month: return L.periodMonth
+        case .all:   return L.periodAll
+        }
+    }
+}
+
+/// 小胶囊按钮：标签页和时段选择共用
+struct Pill: View {
+    let text: String
+    let selected: Bool
+    let action: () -> Void
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.white.opacity(selected ? 0.95 : 0.45))
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(Capsule().fill(.white.opacity(selected ? 0.14 : 0)))
+            .contentShape(Capsule())
+            .onTapGesture(perform: action)
+    }
+}
+
+/// 标签页切换。Expanded 本身不观察 store，切标签要一个观察 store 的视图才会重绘。
+struct PanelSwitch<Quota: View>: View {
+    @ObservedObject var store: Store
+    @ViewBuilder let quota: () -> Quota
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                ForEach(PanelTab.allCases, id: \.self) { t in
+                    Pill(text: t.label, selected: store.tab == t) { store.select(tab: t) }
+                }
+                Spacer()
+            }
+            .padding(.bottom, 12)
+            if store.tab == .history {
+                HistoryView(store: store)
+            } else {
+                quota()
+            }
+        }
+    }
+}
+
+struct HistoryView: View {
+    @ObservedObject var store: Store
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 4) {
+                ForEach(Usage.Period.allCases, id: \.self) { p in
+                    Pill(text: p.label, selected: store.period == p) { store.select(period: p) }
+                }
+                Spacer()
+                if store.usageLoading { ProgressView().controlSize(.mini) }
+            }
+            if let s = store.usage {
+                content(s)
+            } else {
+                Text(L.usageIndexing)
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                    .padding(.vertical, 26)
+            }
+            Text(L.usageNoLocal)
+                .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.32))
+                .padding(.top, 12)
+        }
+    }
+
+    @ViewBuilder func content(_ s: Usage.Summary) -> some View {
+        let total = s.tools.reduce(0) { $0 + $1.total }
+        DailyBars(values: s.daily.map(\.tokens))
+            .frame(height: 40)
+            .padding(.top, 12)
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Text(L.usageTotal).font(.system(size: 11)).foregroundStyle(.white.opacity(0.45))
+            Spacer()
+            Text(fmtTokens(total))
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
+                .monospacedDigit().foregroundStyle(.white)
+            Text("tokens").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(.top, 10)
+        if s.tools.isEmpty {
+            Text(L.usageEmpty)
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                .padding(.top, 8)
+        } else {
+            sep()
+            VStack(spacing: 10) {
+                ForEach(s.tools) { t in
+                    toolRow(t, share: total > 0 ? Double(t.total) / Double(total) : 0)
+                }
+            }
+            sep()
+            SectionLabel(t: L.usageByModel)
+            VStack(spacing: 7) {
+                ForEach(s.models) { m in
+                    HStack(spacing: 6) {
+                        Text(m.model == "?" ? L.usageUnknownModel : shortModel(m.model))
+                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                        Text(m.tool.label)
+                            .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.35))
+                        Spacer()
+                        Text(fmtTokens(m.tokens))
+                            .font(.system(size: 11, weight: .medium)).monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+            }
+            .padding(.top, 9)
+        }
+        if let first = s.firstDay {
+            Text(L.usageSince(first))
+                .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.32))
+                .padding(.top, 10)
+        }
+    }
+
+    @ViewBuilder func toolRow(_ t: Usage.ToolTotal, share: Double) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(t.tool.label)
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.92))
+                Spacer()
+                Text(extra(t)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+                Text(fmtTokens(t.total))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(.white)
+                    .frame(minWidth: 52, alignment: .trailing)
+            }
+            Meter(value: share * 100, tint: Palette.read, height: 4)
+            Text(L.usageBreakdown(fmtTokens(t.input), fmtTokens(t.cacheRead),
+                                  fmtTokens(t.cacheWrite), fmtTokens(t.output), t.requests))
+                .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.38)).lineLimit(1)
+        }
+    }
+
+    /// 工具行右侧的补充：Codex 折合额度，opencode 自带费用，Claude Code 没有额度系数
+    func extra(_ t: Usage.ToolTotal) -> String {
+        switch t.tool {
+        case .codex:
+            return t.quotaPct >= 100 ? L.usageQuotaWindows(t.quotaPct / 100) : L.usageQuotaPct(t.quotaPct)
+        case .opencode:
+            return t.cost > 0 ? String(format: "$%.2f", t.cost) : ""
+        case .claudeCode:
+            return ""
+        }
+    }
+
+    @ViewBuilder func sep() -> some View {
+        Rectangle().fill(.white.opacity(0.08)).frame(height: 1).padding(.vertical, 13)
+    }
+}
+
+/// 每日用量柱状图，最右边一根是今天
+struct DailyBars: View {
+    let values: [Int]
+    var body: some View {
+        GeometryReader { g in
+            let peak = max(values.max() ?? 0, 1)
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(Array(values.enumerated()), id: \.offset) { i, v in
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(i == values.count - 1 ? Palette.read : .white.opacity(v > 0 ? 0.35 : 0.08))
+                        .frame(height: max(2, g.size.height * CGFloat(v) / CGFloat(peak)))
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .bottom)
+        }
     }
 }
 
@@ -219,6 +449,20 @@ struct Expanded: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // 有 store 才有标签页；离屏渲染（README 截图）没有 store，保持原样
+            if let store {
+                PanelSwitch(store: store) { quotaPage() }
+            } else {
+                quotaPage()
+            }
+        }
+        .padding(.horizontal, 17)
+        .padding(.top, 15)
+        .padding(.bottom, 11)
+    }
+
+    /// 「当前额度」页，也就是原来的整个面板
+    @ViewBuilder func quotaPage() -> some View {
             taskEntry()
             if let error {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -237,10 +481,6 @@ struct Expanded: View {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                     .padding(.vertical, 30)
             }
-        }
-        .padding(.horizontal, 17)
-        .padding(.top, 15)
-        .padding(.bottom, 11)
     }
 
     /// 刘海顶部：输入任务 → 本地规则 / Luna 路由 → 锁定模型启动。
@@ -805,6 +1045,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 enum Launcher {
     @MainActor static func main() {
+        // --usage-json [today|week|month|all]：更新索引后打印历史总账，测试和排查用
+        if let i = CommandLine.arguments.firstIndex(of: "--usage-json") {
+            let args = CommandLine.arguments
+            let period = (i + 1 < args.count ? Usage.Period(rawValue: args[i + 1]) : nil) ?? .all
+            let s = Usage.summarize(Usage.loadRecords(), period: period)
+            let obj: [String: Any] = [
+                "period": period.rawValue, "records": s.records,
+                "first_day": s.firstDay ?? NSNull(),
+                "tools": s.tools.map {
+                    ["tool": $0.tool.rawValue, "requests": $0.requests, "input": $0.input,
+                     "cacheRead": $0.cacheRead, "cacheWrite": $0.cacheWrite, "output": $0.output,
+                     "cost": $0.cost, "quotaPct": $0.quotaPct] as [String: Any]
+                },
+                "models": s.models.map {
+                    ["tool": $0.tool.rawValue, "model": $0.model, "tokens": $0.tokens] as [String: Any]
+                },
+                "daily": s.daily.map { ["day": $0.day, "tokens": $0.tokens] as [String: Any] },
+            ]
+            let data = try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys, .prettyPrinted])
+            print(String(data: data, encoding: .utf8)!)
+            exit(0)
+        }
         // --route <任务>：只跑本地规则并打印 JSON，不问 Luna、不启动任务。
         // tests/test_router.py 拿它和 cli/codex_route.py 核对两份规则一致。
         if let i = CommandLine.arguments.firstIndex(of: "--route"),

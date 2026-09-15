@@ -49,6 +49,7 @@ package manager, no account, no API key.
 | **Threshold alerts** | Notifies at 80% and 95% with burn rate, time left, and a cheaper model when one would help |
 | **Menu-bar fallback** | Works on Macs without a notch |
 | **Notch task entry** | Type a task at the top of the expanded panel; local rules (Luna if needed) pick a model once and open it in Terminal |
+| **Usage history** | A second tab totals tokens from Codex, Claude Code and opencode by day, tool and model — from local logs only |
 | **Bilingual** | English / 中文, follows system language |
 
 ### Task routing (local rules + Luna)
@@ -74,6 +75,29 @@ Preview a routing decision without starting anything:
 python3 cli/codex_route.py --task "fix the flaky test" --json
 python3 cli/codex_route.py --task "..." --no-luna   # local rules only
 ```
+
+### Usage history
+
+The **History** tab adds up every token this Mac has a local record of — today,
+7 days, 30 days or all time — split by tool and by model, with a daily bar chart.
+
+| Source | Where it reads | Deduplication |
+|---|---|---|
+| Codex (CLI and desktop) | `~/.codex/sessions`, `~/.codex/archived_sessions` | timestamp + token counts — forked and archived sessions copy events verbatim |
+| Claude Code | `~/.claude/projects` | message id, keeping the largest output — one reply is written several times as it streams, and resumed sessions copy it into new files |
+| opencode | `~/.local/share/opencode/opencode.db`, opened read-only | message id; opencode's own dollar cost is shown as-is |
+
+Codex totals are also converted to 5-hour-window equivalents with the coefficients
+above; Claude Code and opencode are shown in tokens only.
+
+Cursor keeps a `tokenCount` field locally but it is always zero, and Gemini CLI and
+the ChatGPT / Claude chat apps keep no token counts at all — so they cannot be
+included, and the panel says so.
+
+Parsing is cached per file in `~/Library/Application Support/codex-cost/usage-index.json`
+(the first scan of several GB takes about 15 seconds, later refreshes about one).
+The index keeps records from files that have since been deleted, so history survives
+Claude Code's 30-day transcript cleanup. Nothing is uploaded.
 
 ## What the measurements showed
 

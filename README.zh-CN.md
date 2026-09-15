@@ -45,6 +45,7 @@ cd codex-cost && ./build.sh && open CodexCost.app
 | **阈值提醒** | 80% 和 95% 时通知，附燃烧速率、剩余时间，以及值得换的更便宜模型 |
 | **菜单栏回退** | 没有刘海的 Mac 照样能用 |
 | **刘海任务入口** | 展开面板顶部直接输入任务；本地规则（必要时 Luna）选一次模型，在终端里开新会话 |
+| **历史用量** | 第二个标签页按天、工具、模型汇总 Codex、Claude Code、opencode 的 token —— 只读本地日志 |
 | **中英双语** | 跟随系统语言 |
 
 ### 任务路由（本地规则 + Luna）
@@ -62,6 +63,22 @@ cd codex-cost && ./build.sh && open CodexCost.app
 python3 cli/codex_route.py --task "fix the flaky test" --json
 python3 cli/codex_route.py --task "..." --no-luna   # 只跑本地规则
 ```
+
+### 历史用量
+
+「历史用量」标签页把这台 Mac 上所有有本地记录的 token 加起来，可选今天、7 天、30 天或全部，按工具和模型分项，附每日柱状图。
+
+| 来源 | 读哪里 | 怎么去重 |
+|---|---|---|
+| Codex（命令行和桌面版） | `~/.codex/sessions`、`~/.codex/archived_sessions` | 时间戳 + 各项 token —— 分叉、归档的会话会原样复制事件 |
+| Claude Code | `~/.claude/projects` | 消息 id，留输出最多的那遍 —— 一条回复在流式输出时会写好几遍，恢复的会话还会复制到新文件 |
+| opencode | `~/.local/share/opencode/opencode.db`，只读打开 | 消息 id；opencode 自带的美元费用原样显示 |
+
+Codex 的合计还会按上面的系数折合成「几个 5 小时额度」；Claude Code 和 opencode 只显示 token 数。
+
+Cursor 本地虽有 `tokenCount` 字段，但全是 0；Gemini CLI 和 ChatGPT / Claude 的聊天应用本地根本没有 token 记录 —— 所以没法计入，面板上会注明。
+
+解析结果按文件缓存在 `~/Library/Application Support/codex-cost/usage-index.json`（首次扫几个 GB 的日志约 15 秒，之后刷新约 1 秒）。索引保留已被删除的文件的记录，所以 Claude Code 默认 30 天清理旧会话之后，历史照样在。不上传任何数据。
 
 ## 测出来的几件事
 

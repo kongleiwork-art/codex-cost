@@ -106,4 +106,34 @@ enum L {
     static var modelLockedOnce: String {
         s("会话中途不切模型，保缓存", "Model stays locked mid-session to keep cache")
     }
+
+    // 历史用量
+    static var tabQuota: String { s("当前额度", "Quota") }
+    static var tabHistory: String { s("历史用量", "History") }
+    static var periodToday: String { s("今天", "Today") }
+    static var periodWeek: String { s("7 天", "7 days") }
+    static var periodMonth: String { s("30 天", "30 days") }
+    static var periodAll: String { s("全部", "All") }
+    static var usageTotal: String { s("合计", "Total") }
+    static var usageByModel: String { s("按模型", "By model") }
+    static var usageUnknownModel: String { s("未知模型", "Unknown model") }
+    static var usageEmpty: String { s("这段时间没有用量记录", "No usage in this period") }
+    static var usageIndexing: String {
+        s("正在建立索引，首次要扫描全部日志…", "Indexing logs — the first run scans everything…")
+    }
+    static var usageNoLocal: String {
+        s("Cursor、Gemini、网页和桌面聊天在本地没有 token 记录，未计入",
+          "Cursor, Gemini, and web/desktop chats keep no local token counts — not included")
+    }
+    static func usageSince(_ day: String) -> String { s("最早记录 \(day)", "Earliest record \(day)") }
+    static func usageBreakdown(_ i: String, _ r: String, _ w: String, _ o: String, _ n: Int) -> String {
+        s("新增 \(i) · 缓存读 \(r) · 缓存写 \(w) · 输出 \(o) · \(n) 次",
+          "new \(i) · cache read \(r) · cache write \(w) · out \(o) · \(n) req")
+    }
+    static func usageQuotaPct(_ p: Double) -> String {
+        s("折合 5 小时额度 \(Int(p.rounded()))%", "≈ \(Int(p.rounded()))% of a 5h window")
+    }
+    static func usageQuotaWindows(_ x: Double) -> String {
+        s(String(format: "折合 %.1f 个 5 小时额度", x), String(format: "≈ %.1f× a 5h window", x))
+    }
 }
