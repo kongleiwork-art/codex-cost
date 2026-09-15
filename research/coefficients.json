@@ -5,7 +5,7 @@
   "fallback": "gpt-5.6-sol",
   "models": {
     "gpt-5.6-sol":   {"fresh": 42500, "cached": 492537, "output": 13572, "request": 0.0328, "counterfactual": true},
-    "gpt-5.5":       {"fresh": 49419, "cached": 572717, "output": 15782, "request": 0.0282, "counterfactual": true},
+    "gpt-5.5":       {"fresh": 49419, "cached": 572717, "output": 15782, "request": 0.0282, "counterfactual": false},
     "gpt-5.6-terra": {"fresh": 47223, "cached": 547263, "output": 15080, "request": 0.0295, "counterfactual": true},
     "gpt-5.6-luna":  {"free": true, "counterfactual": true},
     "gpt-6-astra":   {"fresh": 35094, "cached": 250428, "output": 2318, "request": 0.5632, "counterfactual": true}

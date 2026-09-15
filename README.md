@@ -136,14 +136,14 @@ Each model gets four coefficients instead of one multiplier:
 | Model | New input per 1% | Cached input per 1% | Output + reasoning per 1% | Per request |
 |---|---:|---:|---:|---:|
 | `gpt-5.6-sol` | 42,500 tok | 492,537 tok | 13,572 tok | 0.0328% |
-| `gpt-5.5` | 49,419 tok | 572,717 tok | 15,782 tok | 0.0282% |
 | `gpt-5.6-terra` | 47,223 tok | 547,263 tok | 15,080 tok | 0.0295% |
 | `gpt-5.6-luna` | free | free | free | free |
 | `gpt-6-astra` | 35,094 tok\* | 250,428 tok | 2,318 tok | 0.5632%\* |
 
 Sol's four are fitted jointly on every Sol measurement with non-negative
-least squares ([`research/refit.py`](research/refit.py)). 5.5 and Terra are
-indistinguishable from Sol at this resolution and are scaled from it. \*Astra's
+least squares ([`research/refit.py`](research/refit.py)). Terra is
+indistinguishable from Sol at this resolution and is scaled from it; gpt-5.5, an
+older model, is no longer listed. \*Astra's
 cached rate comes from a dedicated 120K-context cell; how the rest splits between
 fresh input and the per-request floor is still loose (fresh anywhere from 25K to
 80K fits almost equally well).
@@ -161,8 +161,8 @@ These numbers are only worth something if you know their error bars.
   regression points, RMS 0.84 against a 0.29 rounding floor, leave-one-out 0.87.
   The fit error sits well above the floor, and one real 148-request session is
   over-predicted (88% vs. 82%). The table below shows where each version lands.
-- **5.5 and Terra are indistinguishable from Sol** at this resolution. Their
-  error bars overlap; treat all three as ≈1×.
+- **Terra is indistinguishable from Sol** at this resolution. Their error bars
+  overlap; treat both as ≈1×.
 - **Astra rests on four segments (~100 calls); Luna on 30.** Astra's cached and
   output rates hold up when any one segment is dropped; its fresh-vs-per-request
   split does not. Read Luna, and that part of Astra, as order-of-magnitude.
@@ -277,7 +277,6 @@ docs/        screenshots, regenerated from fixtures by docs/render.sh
 ```
 
 ## Contributing
-
 
 Planned work and open decisions live in [docs/ROADMAP.md](docs/ROADMAP.md) (Chinese).
 Measurements from other plans and accounts are the most useful thing you could

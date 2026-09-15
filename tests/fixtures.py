@@ -91,14 +91,14 @@ def normal(root, now):
         if i == 10:
             s.tokens(t + 5, None, lim)
     s.close()
-    s, n2 = Session(root, now - 1.2 * H, "gpt-5.5"), 14
+    s, n2 = Session(root, now - 1.2 * H, "gpt-5.6-terra"), 14
     for i in range(n2):
         s.tokens(now - 1.1 * H + i * 270, usage(i, fresh=1_800, cached=22_000, output=300),
                  {"primary": window(300, ramp(10, 12, i, n2), r5),
                   "secondary": window(10080, ramp(41, 42, i, n2), rw)})
     s.close()
     return {"requests": 50, "five_hour": 12, "weekly": 42, "pools": [], "binding": 42,
-            "current_model": "gpt-5.5", "models": {"gpt-5.6-sol": 36, "gpt-5.5": 14}}
+            "current_model": "gpt-5.6-terra", "models": {"gpt-5.6-sol": 36, "gpt-5.6-terra": 14}}
 
 
 def reserve(root, now):

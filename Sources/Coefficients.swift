@@ -13,5 +13,5 @@ extension Budget {
     /// 没有系数的模型按它估算
     static let fallback = coef["gpt-5.6-sol"]!
     /// 出现在「换成单一模型」对照和换模型建议里的模型
-    static let counterfactualModels: [String] = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]
+    static let counterfactualModels: [String] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]
 }

@@ -36,7 +36,7 @@ WIN_5H, WIN_WEEK = 300, 10080
 # 与 Sources/Budget.swift 保持一致，来龙去脉见那边的注释。简言之：对全部 sol
 # 测量做联合非负最小二乘（research/refit.py，读数滞后一次对齐），sol 140 个回归点
 # RMS 0.84。req/* 与 ctx/* 把 fresh 和「每请求」拆开了：旧版 0.0819% 里大半其实是
-# fresh 成本。5.5 / terra 与 sol 分不出来，按 0.86× / 0.90× 缩放；astra 的缓存费率
+# fresh 成本。terra 与 sol 分不出来，按 0.90× 缩放（5.5 是老模型，不参加对照）；astra 的缓存费率
 # 由 astra/bigctx 定下，fresh 与每请求的拆分仍不稳。
 # 数值只存在 research/coefficients.json（app 由它生成、refit 也读它）
 COEF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
