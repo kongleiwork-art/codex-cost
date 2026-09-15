@@ -1,0 +1,26 @@
+# 构建 app 并跑全部测试。测试只用 tests/fixtures.py 生成的固定样本，不需要真实日志。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Coefficients in sync with research/coefficients.json
+        run: python3 research/sync_coefficients.py --check
+
+      - name: Tests
+        run: |
+          python3 tests/test_coefficients.py
+          python3 tests/test_router.py
+          python3 tests/test_quota.py
+          python3 tests/test_usage.py
