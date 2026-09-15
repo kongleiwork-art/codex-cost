@@ -62,13 +62,17 @@ final class Alerts {
         // 有更便宜的模型能明显省，就一并给出建议 —— 把研究结论变成可执行的话
         if let cur = r.currentModel, let curCost = Budget.coef[cur],
            curCost.fresh != nil {
-            let alt = Budget.counterfactualModels
-                .map { ($0, r.counterfactual($0)) }
-                .filter { $0.1 < r.spent * 0.7 && $0.1 > 0 }
-                .min { $0.1 < $1.1 }
-            if let alt, alt.0 != cur {
-                body += "\n" + L.switchHint(shortModel(cur), shortModel(alt.0),
-                                            r.spent - alt.1)
+            // 拆成普通循环、显式标类型：链式 map/filter/min 在 CI 的编译器上类型推断超时
+            let limit: Double = r.spent * 0.7
+            var best: (model: String, cost: Double)? = nil
+            for m in Budget.counterfactualModels {
+                let c: Double = r.counterfactual(m)
+                guard c > 0, c < limit else { continue }
+                if best == nil || c < best!.cost { best = (m, c) }
+            }
+            if let best, best.model != cur {
+                let save: Double = r.spent - best.cost
+                body += "\n" + L.switchHint(shortModel(cur), shortModel(best.model), save)
             }
         }
         guard Self.canNotify, authorized else { return }
