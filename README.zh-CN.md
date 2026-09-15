@@ -63,7 +63,7 @@ python3 cli/codex_route.py --task "..." --no-luna   # 只跑本地规则
 
 「历史用量」标签页把这台 Mac 上所有有本地记录的 token 加起来，可选今天、7 天、30 天或全部，按工具和模型分项，附每日柱状图。
 
-<img src="docs/history-zh.png" width="380" alt="展开历史用量：token 拆解、两个额度窗口、各模型消耗，以及同样的工作量换成其它模型的价格">
+<img src="docs/history-zh.png" width="380" alt="历史用量页：一周内 Codex、Claude Code、opencode 的 token，按工具和模型分项">
 
 | 来源 | 读哪里 | 怎么去重 |
 |---|---|---|
