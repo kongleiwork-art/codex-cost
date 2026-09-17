@@ -81,25 +81,17 @@ enum Budget {
         var model: String
         var context: Int        // 这次请求的输入 token（含缓存），也就是接着用时要重读的上下文
         var idleMinutes: Double { Date().timeIntervalSince(ts) / 60 }
-        /// 缓存还在时，接着用一次的代价（%）
-        var resumeHitPct: Double {
+        /// 接着这段会话，每轮大约要花多少（%）。
+        ///
+        /// 花的是「每轮重新发送的上下文」，跟缓存有没有过期无关：缓存失效后重读的老
+        /// 内容，服务端仍按缓存价计费（见顶部计费规则）。实测 recheck/bigctx 里含 2 次
+        /// 失效的 39 次请求共 17%，与全部按缓存计的 16.4% 吻合；按新增输入计要 24%。
+        var resumePct: Double {
             Budget.cost(fresh: 0, cached: context, output: 0, requests: 1, model: model)
         }
-        /// 缓存已失效时的代价：整段上下文按新增输入重读
-        var resumeMissPct: Double {
-            Budget.cost(fresh: context, cached: 0, output: 0, requests: 1, model: model)
-        }
-        enum Hint: String { case maybe, likely }
-        /// 空闲越久越容易失效：实测 10–30 分钟约四分之一，超过 1 小时约九成（见 README）。
-        /// 上下文小、重读也不贵，或者空闲超过半天（多半已经换了事做），都不提示。
+        /// 上下文够大、每轮开销值得一提时才显示。
         /// cli/codex_budget.py 的 last_request_info 用同一套规则。
-        var cacheHint: Hint? {
-            guard context >= 30_000, resumeMissPct >= 0.5 else { return nil }
-            let m = idleMinutes
-            if m >= 60 && m <= 12 * 60 { return .likely }
-            if m >= 10 && m < 60 { return .maybe }
-            return nil
-        }
+        var worthShowing: Bool { context >= 30_000 && resumePct >= 0.2 }
     }
     struct Result {
         var windowStart: Date

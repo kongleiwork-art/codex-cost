@@ -231,10 +231,10 @@ HINT_MIN_CONTEXT = 30_000
 
 
 def last_request_info(latest):
-    """最近一次请求的缓存失效提示，规则与 Sources/Budget.swift 的 LastRequest 一致。
+    """最近一次请求：接着这段会话每轮要花多少。规则与 Sources/Budget.swift 的 LastRequest 一致。
 
-    空闲越久越容易失效：实测 10–30 分钟约四分之一，超过 1 小时约九成。上下文小、重读
-    不贵，或者空闲超过半天，都不提示。
+    花的是每轮重新发送的上下文，与缓存有没有过期无关 —— 失效后重读的老内容仍按缓存价计费。
+    上下文小、每轮不贵就不提示。
     """
     if not latest or not latest.get("ts"):
         return None
@@ -243,27 +243,20 @@ def last_request_info(latest):
     except ValueError:
         return None
     idle = (time.time() - ts) / 60
-    miss = cost_pct(latest["context"], 0, 1, latest["model"], 0)
-    hit = cost_pct(0, 0, 1, latest["model"], latest["context"])
-    hint = None
-    if latest["context"] >= HINT_MIN_CONTEXT and miss >= 0.5:
-        if 60 <= idle <= 12 * 60:
-            hint = "likely"
-        elif 10 <= idle < 60:
-            hint = "maybe"
+    resume = cost_pct(0, 0, 1, latest["model"], latest["context"])
+    show = latest["context"] >= HINT_MIN_CONTEXT and resume >= 0.2
     return {"model": latest["model"], "context": latest["context"], "idle_minutes": idle,
-            "resume_miss_pct": miss, "resume_hit_pct": hit, "cache_hint": hint}
+            "resume_pct": resume, "show": show}
 
 
-def print_cache_hint(info):
-    if not info or not info["cache_hint"]:
+def print_resume_cost(info):
+    if not info or not info["show"]:
         return
     m = int(info["idle_minutes"])
     idle = f"{m // 60} 小时 {m % 60} 分钟" if m >= 60 else f"{m} 分钟"
-    head = "缓存大概率已失效" if info["cache_hint"] == "likely" else "缓存可能已失效"
-    print(f"\n  \033[33m{head}\033[0m  \033[2m上次请求在 {idle}前 · 上下文 {info['context']:,} tok\033[0m")
-    print(f"    接着这段会话约花 {info['resume_miss_pct']:.1f}%"
-          f"\033[2m（缓存还在只要 {info['resume_hit_pct']:.1f}%）\033[0m\n")
+    print(f"\n  \033[2m上次请求在 {idle}前 · 上下文 {info['context']:,} tok\033[0m")
+    print(f"    接着这段会话每轮约 {info['resume_pct']:.1f}%"
+          f"\033[2m —— 花的是上下文大小，与缓存过期无关\033[0m\n")
 
 
 def collect_window(since_iso, limit=60, main_reset=None, pools=None):
@@ -430,7 +423,7 @@ def main():
                              ensure_ascii=False, indent=2))
         else:
             print("\n  当前窗口还没有任何活动。\n")
-            print_cache_hint(last_request_info(latest))
+            print_resume_cost(last_request_info(latest))
         return 0
 
     if args.json:
@@ -472,7 +465,7 @@ def main():
 
     report(per_model, total, n_sessions, quota, quota_ts, since, current_model,
            pools, pool_req)
-    print_cache_hint(last_request_info(latest))
+    print_resume_cost(last_request_info(latest))
     return 0
 
 if __name__ == "__main__":
