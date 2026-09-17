@@ -164,6 +164,22 @@ def matrix():
         C.append(dict(cell=f"ctx/{t}k", prompt=TINY, warmup=ctx_seed(t * 1_000),
                       model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=20,
                       why=f"固定 20 次请求，上下文约 {t} 千 token"))
+    # M —— 缓存费率复核（路线图 2.3）。
+    #
+    # 现在有三个互相对不上的数：671 条实验联合拟合给 492,537 tok/1%；ctx/* 单独算
+    # 约 35 万；190 段真实使用片段（research/validate_real.py）指向约 38.8 万，
+    # 按现行系数预测真实使用会低估约 23%（9 月的 sol 片段约 13%）。
+    #
+    # 这两组专门用来分辨：缓存量差一倍多，若费率是 38 万而不是 49 万，两组的实测
+    # 消耗会明显高于按现行系数的预测，且两组的偏差方向一致。必须同一天、同一个
+    # 5 小时窗口里连着跑 —— 跨天就混进了计费口径可能变化的因素。
+    # 跑之前先跑 control（路线图 2.2），确认口径没变。
+    C.append(dict(cell="recheck/bigctx", prompt=TINY, warmup=ctx_seed(150_000),
+                  model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=40,
+                  why="复核缓存费率：15 万上下文 × 40 次"))
+    C.append(dict(cell="recheck/ctx200k", prompt=TINY, warmup=ctx_seed(200_000),
+                  model=BASE_MODEL, effort=BASE_EFFORT, resume=True, trials=20,
+                  why="复核缓存费率：20 万上下文 × 20 次"))
     # L —— astra 的缓存费率。
     #
     # 现有 astra 数据（clean / verbose / effort / model）每次上下文都在 2 万上下，
@@ -363,7 +379,7 @@ def cmd_plan(args):
         print(f"{c['cell']:<20} {c['model']:<14} {c['effort']:<8} {n:>6}  {c['why']}")
     print("-" * 82)
     print(f"合计 {total} 次调用，{len(cells)} 个实验组（次数列 a+b 表示 a 次测量 + b 轮预热）\n")
-    print("注意：req/*、ctx/* 和 astra/bigctx 是大上下文组，很贵 —— 按当前系数每组约 10~25%，"
+    print("注意：req/*、ctx/*、recheck/* 和 astra/bigctx 是大上下文组，很贵 —— 按当前系数每组约 10~25%，"
           "若缓存实际更贵还会更高。\n建议用 --cell 一组一组跑，并用 --budget 卡住。\n")
     print("成对对比（每一对只差一个变量，这是能解开共线性的原因）：")
     print("  cache/cold  vs cache/warm    → 缓存 token 是否真的更便宜")
