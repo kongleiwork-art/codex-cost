@@ -10,7 +10,7 @@ tests/fixtures.py 生成的固定样本：既核对每个场景的期望值，�
 零依赖，标准库。样本写在临时目录，不碰你的 ~/.codex。
 """
 from __future__ import annotations
-import json, os, subprocess, sys, tempfile, unittest
+import glob, json, os, subprocess, sys, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -93,6 +93,72 @@ def scenario_test(name):
 
 for _name in fixtures.SCENARIOS:
     setattr(Quota, f"test_{_name}", scenario_test(_name))
+
+
+class Incremental(unittest.TestCase):
+    """增量解析：app 常驻时每次刷新只解析新增的字节（Budget.FileState）。
+
+    这条路一旦漏算，面板会悄悄少报用量而没人发现 —— 所以这里跑一次真的增量：
+    先让 app 在同一个进程里扫一遍，往日志追加几次请求，再让它扫第二遍，
+    结果必须和「整份重读」（新起一个进程）完全一致。
+    """
+
+    def setUp(self):
+        if not os.path.exists(APP):
+            raise RuntimeError("找不到 ./codex-cost，先跑 ./build.sh")
+        self.tmp = tempfile.TemporaryDirectory(prefix="codex-cost-incremental-")
+        self.now = time.time()
+        fixtures.build(self.tmp.name, now=self.now)
+        self.home = os.path.join(self.tmp.name, "normal")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def newest_rollout(self):
+        files = glob.glob(os.path.join(self.home, "sessions", "**", "rollout-*.jsonl"),
+                          recursive=True)
+        return max(files, key=os.path.getmtime)
+
+    def append_requests(self, n=4):
+        """按 fixtures 的形状往最近的会话里追加几次请求，额度读数跟着涨"""
+        path = self.newest_rollout()
+        lines = []
+        for i in range(n):
+            t = self.now - 60 + i * 10
+            lim = {"primary": fixtures.window(300, 13 + i, self.now + 2.2 * fixtures.H),
+                   "secondary": fixtures.window(10080, 42, self.now + 3.4 * 24 * fixtures.H)}
+            lines.append(json.dumps({
+                "timestamp": fixtures.iso(t),
+                "type": "event_msg",
+                "payload": {"type": "token_count",
+                            "info": {"last_token_usage": fixtures.usage(i, cached=30_000)},
+                            "rate_limits": {"limit_id": "codex", **lim}}}))
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def test_append_between_scans(self):
+        env = dict(os.environ, CODEX_HOME=self.home)
+        p = subprocess.Popen([APP, "--dump", "--json", "--recompute", "2"], env=env,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertIn("recomputed", p.stderr.readline(), "app 没报告第一次扫描完成")
+            self.append_requests()
+            p.stdin.write("\n")
+            p.stdin.flush()
+            out, err = p.communicate(timeout=120)
+        finally:
+            if p.poll() is None:
+                p.kill()
+        self.assertEqual(p.returncode, 0, err)
+        incremental = view(json.loads(out), "spent")
+        full = view(run([APP, "--dump", "--json"], self.home), "spent")
+        self.assertEqual(incremental["requests"], full["requests"], "增量扫描漏算了请求")
+        self.assertEqual(incremental["models"], full["models"], "增量扫描的模型归属不一致")
+        self.assertEqual(incremental["five_hour"], full["five_hour"], "增量扫描没读到最新的额度读数")
+        self.assertAlmostEqual(incremental["spent"], full["spent"], places=6,
+                               msg="增量扫描与整份重读的估算不一致")
+        self.assertEqual(incremental["context"], full["context"], "增量扫描的最近一次上下文不一致")
 
 
 if __name__ == "__main__":

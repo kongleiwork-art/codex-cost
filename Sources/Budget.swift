@@ -167,8 +167,12 @@ enum Budget {
 
     /// 取最近修改的若干个会话文件。
     ///
-    /// 不能只挑「窗口内修改过」的：额度读数要从最新的一条记录里取，而那条
-    /// 记录可能早于窗口（比如你几小时没用 Codex）。窗口过滤只作用于用量累加。
+    /// 要读哪些 rollout：一周内修改过的，最多 limit 个。
+    ///
+    /// 不能只挑「5 小时窗口内修改过」的：额度读数要从最新的一条记录里取，而那条
+    /// 记录可能早于窗口（比如你几小时没用 Codex）；独立额度池按周窗口认，也要看得到
+    /// 一周内的读数。一周以上没动过的文件对这两件事都没用 —— 之前不看时间只取最近
+    /// 40 个，实测每次刷新有 391 MB 白读在这种文件上。全都太旧时留最新的一个兜底。
     private static func sessionFiles(limit: Int = 40) -> [URL] {
         // 与 Codex 自己一致：设了 CODEX_HOME 就用它，否则 ~/.codex。
         // 从 Finder / open 启动的 app 看不到 shell 里的变量，这主要给命令行和测试用。
@@ -187,7 +191,10 @@ enum Budget {
                                  .contentModificationDate else { continue }
             out.append((url, m))
         }
-        return out.sorted { $0.1 > $1.1 }.prefix(limit).map(\.0)
+        let horizon = Date().addingTimeInterval(-windowMinutesWeek * 60)
+        let sorted = out.sorted { $0.1 > $1.1 }
+        let fresh = sorted.filter { $0.1 >= horizon }.prefix(limit).map(\.0)
+        return fresh.isEmpty ? Array(sorted.prefix(1).map(\.0)) : Array(fresh)
     }
 
     /// 读取一个 rollout 文件里落在窗口内的用量，并回传见到的最新额度读数。
@@ -226,20 +233,132 @@ enum Budget {
         let has5h: Bool; let weeklyReset: Double?
     }
 
+    /// 一个文件解析到哪儿了。折叠态每 30 秒扫一次，整份重读的代价太大：
+    /// 实测一次 588 MB / 1.2 秒 CPU，开 10 小时累计 23 分钟 CPU。这里记住读到的
+    /// 偏移量，之后每次只解析新增的字节；稳态下每次只有末尾几 KB。
+    private struct FileState {
+        var offset = 0            // 已经解析到这个字节位置（下一行的起点）
+        var started = false       // 是否已经定过起点
+        var model: String? = nil  // 解析到 offset 时的当前模型
+        var lastContext = 0       // 解析到 offset 时上一次请求的上下文
+        var events: [UsageEvent] = []
+        var readings: [Reading] = []
+        var latest: LastRequest? = nil
+    }
+    private static var fileStates: [String: FileState] = [:]
+    /// 首次解析一个文件时最多往回读这么多 —— 200 MB 的会话日志也只读尾部
+    private static let firstReadCap = 24 << 20
+
+    /// 从 off 往后找到下一行的起点，保证不会从半行开始解析
+    private static func lineStart(_ raw: UnsafeRawBufferPointer, _ off: Int) -> Int {
+        if off <= 0 { return 0 }
+        var i = off
+        while i < raw.count, raw[i] != nl { i += 1 }
+        return min(i + 1, raw.count)
+    }
+
+    /// 这一段开头那条记录的时间（连着几行都解析不出来就放弃）
+    private static func firstTimestamp(_ raw: UnsafeRawBufferPointer, from: Int) -> Date? {
+        var start = from, lines = 0
+        while start < raw.count, lines < 200 {
+            var end = start
+            while end < raw.count, raw[end] != nl { end += 1 }
+            defer { start = end + 1; lines += 1 }
+            let len = end - start
+            guard len > 40 else { continue }
+            let line = Data(bytes: raw.baseAddress!.advanced(by: start), count: len)
+            guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let ts = parseDate(obj["timestamp"] as? String ?? "") else { continue }
+            return ts
+        }
+        return nil
+    }
+
+    /// 首次解析的起点：从尾部往回翻倍试探，直到这一段的开头早于窗口起点
+    private static func firstOffset(_ raw: UnsafeRawBufferPointer, since: Date) -> Int {
+        var back = 1 << 20
+        while back < min(firstReadCap, raw.count) {
+            let start = lineStart(raw, raw.count - back)
+            if let ts = firstTimestamp(raw, from: start), ts < since { return start }
+            back <<= 2
+        }
+        return lineStart(raw, max(0, raw.count - firstReadCap))
+    }
+
+    /// 从中间开始解析时，当前模型名可能写在起点之前 —— 往回找最近一条 turn_context。
+    /// 找不到的话这些请求的模型是「?」，没有系数，成本会算成 0。
+    private static func modelBefore(_ raw: UnsafeRawBufferPointer, _ offset: Int) -> String? {
+        var end = offset
+        while end > 0 {
+            let start = max(0, end - (1 << 20))
+            var found: String? = nil
+            var i = start
+            while i < end {
+                var j = i
+                while j < end, raw[j] != nl { j += 1 }
+                let len = j - i
+                if len > 40 {
+                    let slice = UnsafeRawBufferPointer(rebasing: raw[i..<j])
+                    if contains(slice, markCtx),
+                       let obj = try? JSONSerialization.jsonObject(
+                           with: Data(bytes: slice.baseAddress!, count: len)) as? [String: Any],
+                       let payload = obj["payload"] as? [String: Any],
+                       let m = payload["model"] as? String { found = m }
+                }
+                i = j + 1
+            }
+            if let found { return found }
+            if start == 0 { break }
+            end = start
+        }
+        return nil
+    }
+
     private static func scan(_ url: URL, since: Date,
                             events: inout [UsageEvent],
                             readings: inout [Reading],
                             latest: inout LastRequest?) -> Bool {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
-        var model: String? = nil
-        var lastContext = 0
-        var touched = false
+        let path = url.path
+        var st = fileStates[path] ?? FileState()
+        // 文件被截断或整个换掉了（归档、改名复用），之前的偏移量作废
+        if st.offset > data.count { st = FileState() }
+        if st.offset < data.count {
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                if !st.started {
+                    st.started = true
+                    st.offset = firstOffset(raw, since: since)
+                    if st.offset > 0 { st.model = modelBefore(raw, st.offset) }
+                }
+                parse(raw, to: data.count, since: since, into: &st)
+            }
+        }
+        // 滑出窗口的用量事件丢掉，别无限攒；读数按周窗口留，至少留最新的一条
+        st.events.removeAll { $0.ts < since }
+        let weekAgo = Date().addingTimeInterval(-windowMinutesWeek * 60)
+        if let newest = st.readings.max(by: { $0.ts < $1.ts }) {
+            st.readings.removeAll { $0.ts < weekAgo }
+            if st.readings.isEmpty { st.readings = [newest] }
+        }
+        fileStates[path] = st
+        events.append(contentsOf: st.events)
+        readings.append(contentsOf: st.readings)
+        if let l = st.latest, latest == nil || l.ts > latest!.ts { latest = l }
+        return !st.events.isEmpty
+    }
 
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            var start = 0
-            while start < raw.count {
+    /// 解析 [st.offset, to) 这一段，把结果攒进 st。最后一行可能还没写完，留到下次。
+    private static func parse(_ raw: UnsafeRawBufferPointer, to: Int,
+                             since: Date, into st: inout FileState) {
+        var model = st.model
+        var lastContext = st.lastContext
+        var start = st.offset
+        defer { st.offset = start; st.model = model; st.lastContext = lastContext }
+        do {
+            while start < to {
                 var end = start
-                while end < raw.count, raw[end] != nl { end += 1 }
+                while end < to, raw[end] != nl { end += 1 }
+                if end >= to { break }          // 半行：Codex 还在写，下次再读
                 defer { start = end + 1 }
                 let len = end - start
                 if len < 40 { continue }
@@ -279,7 +398,7 @@ enum Budget {
                     }
                 }
                 if let ts, !got.isEmpty {
-                    readings.append(Reading(ts: ts, model: model ?? "?", windows: got))
+                    st.readings.append(Reading(ts: ts, model: model ?? "?", windows: got))
                 }
 
                 // info 为空的 token_count 不是一次真实请求 —— 会话启动、额度
@@ -292,8 +411,8 @@ enum Budget {
                 let outp = (u["output_tokens"] as? Int ?? 0)
                          + (u["reasoning_output_tokens"] as? Int ?? 0)
                 // 最近一次请求不受 5 小时窗口限制：空闲超过 5 小时回来，也要能提示缓存失效
-                if latest == nil || ts > latest!.ts {
-                    latest = LastRequest(ts: ts, model: model ?? "?", context: inp)
+                if st.latest == nil || ts > st.latest!.ts {
+                    st.latest = LastRequest(ts: ts, model: model ?? "?", context: inp)
                 }
                 let prevContext = lastContext
                 lastContext = inp
@@ -306,14 +425,12 @@ enum Budget {
                     cached += fresh
                     fresh = 0
                 }
-                events.append(UsageEvent(ts: ts, model: model ?? "?",
-                                         fresh: fresh, cached: cached, output: outp,
-                                         has5h: got[windowMinutes5h] != nil,
-                                         weeklyReset: got[windowMinutesWeek]?.resetsAt))
-                touched = true
+                st.events.append(UsageEvent(ts: ts, model: model ?? "?",
+                                            fresh: fresh, cached: cached, output: outp,
+                                            has5h: got[windowMinutes5h] != nil,
+                                            weeklyReset: got[windowMinutesWeek]?.resetsAt))
             }
         }
-        return touched
     }
 
     /// 两个周窗口是不是同一个桶：按重置时间认，相差一小时以内算同一个
