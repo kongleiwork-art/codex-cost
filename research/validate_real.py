@@ -7,6 +7,10 @@
 片段怎么挑见 codex_logs.clean_segments。对齐方式和 refit 一致：读数滞后一次请求，
 所以首尾读数之差对应「第一个请求到倒数第二个请求」的用量。
 只输出聚合数字，不含提示词和路径。
+
+**这个口径系统性偏低，别拿它下结论**：跨度 ≥8% 的片段基本都是长时间连续使用，
+而那种时段常常同时开着好几个会话，别的会话花的额度也算进了这一段的读数。
+判断模型准不准用 intervals.py（逐区间、区分独占和并行；独占时段比值 0.99）。
 """
 from __future__ import annotations
 import argparse, json, statistics, time
@@ -70,6 +74,7 @@ def main(argv=None):
             e = [s["error"] for s in b]
             print(f"  {label:<12} {len(b):>3} 段  平均偏差 {statistics.mean(e):+.2f}  "
                   f"相对 {statistics.median([s['error'] / s['observed'] for s in b]):+.0%}")
+    print("  注意：并行会话花的额度也记在这些片段的读数里 —— 判断模型准不准见 intervals.py")
     ratios = [s["observed"] / s["weekly_delta"] for s in segs if s["weekly_delta"]]
     if ratios:
         print(f"\n同一片段里 5 小时读数跨度 / 周读数跨度：中位数 {statistics.median(ratios):.1f}（{len(ratios)} 段）")
