@@ -546,16 +546,15 @@ struct Expanded: View {
 
     /// 空闲太久：接着这段会话，缓存可能已经失效，整段上下文要按新增输入重读
     @ViewBuilder func cacheHint(_ s: Snapshot) -> some View {
-        if let lr = s.lastRequest, let hint = lr.cacheHint {
-            let likely = hint == .likely
+        if let lr = s.lastRequest, lr.worthShowing {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Image(systemName: "clock.arrow.circlepath").font(.system(size: 10))
                     Text(L.lastRequestIdle(fmtIdle(lr.idleMinutes), fmtTokens(lr.context)))
                         .font(.system(size: 10, weight: .medium))
                 }
-                .foregroundStyle(likely ? Palette.floor.opacity(0.95) : .white.opacity(0.62))
-                Text(L.cacheResume(likely: likely, miss: lr.resumeMissPct, hit: lr.resumeHitPct))
+                .foregroundStyle(.white.opacity(0.62))
+                Text(L.resumeCost(lr.resumePct))
                     .font(.system(size: 9.5))
                     .foregroundStyle(.white.opacity(0.45))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1038,8 +1037,7 @@ enum Launcher {
                     "last_request": r.lastRequest.map { lr -> Any in
                         ["model": lr.model, "context": lr.context,
                          "idle_minutes": lr.idleMinutes,
-                         "resume_miss_pct": lr.resumeMissPct, "resume_hit_pct": lr.resumeHitPct,
-                         "cache_hint": lr.cacheHint.map { $0.rawValue as Any } ?? NSNull()]
+                         "resume_pct": lr.resumePct, "show": lr.worthShowing]
                             as [String: Any]
                     } ?? NSNull(),
                 ]
@@ -1071,8 +1069,8 @@ enum Launcher {
             if let b = r.binding { print(String(format: "binding %.0f%%", b.usedPercent)) }
             if let lr = r.lastRequest {
                 print("last   \(lr.model)  context \(lr.context)  idle \(Int(lr.idleMinutes))m  "
-                      + String(format: "resume %.2f%% / %.2f%%  ", lr.resumeMissPct, lr.resumeHitPct)
-                      + "hint \(lr.cacheHint?.rawValue ?? "-")")
+                      + String(format: "resume %.2f%%  ", lr.resumePct)
+                      + "show \(lr.worthShowing)")
             }
             exit(0)
         }

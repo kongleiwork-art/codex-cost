@@ -47,8 +47,10 @@ class Coefficients(unittest.TestCase):
         self.assertIn(self.data["fallback"], self.data["models"])
         for m, c in self.data["models"].items():
             if not c.get("free"):
-                for k in ("fresh", "cached", "output", "request"):
+                for k in ("fresh", "cached", "output"):
                     self.assertGreater(c[k], 0, f"{m}.{k}")
+                # 每请求固定成本实测为 0（req/many 与 req/few 专门拆过），只要求非负
+                self.assertGreaterEqual(c["request"], 0, f"{m}.request")
 
 
 if __name__ == "__main__":

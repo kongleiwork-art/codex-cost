@@ -98,8 +98,7 @@ def normal(root, now):
                   "secondary": window(10080, ramp(41, 42, i, n2), rw)})
     s.close()
     return {"requests": 50, "five_hour": 12, "weekly": 42, "pools": [], "binding": 42,
-            "current_model": "gpt-5.6-terra", "models": {"gpt-5.6-sol": 36, "gpt-5.6-terra": 14},
-            "cache_hint": None}
+            "current_model": "gpt-5.6-terra", "models": {"gpt-5.6-sol": 36, "gpt-5.6-terra": 14}}
 
 
 def reserve(root, now):
@@ -190,8 +189,11 @@ def other_limit(root, now):
 
 
 def idle_big_context(root, now):
-    """大上下文会话空闲了一个多小时：缓存大概率已失效，要提示接着用得按新增输入重读。
-    最近一次请求不受 5 小时窗口限制；app 和 CLI 的提示档位、重读代价必须一致。"""
+    """大上下文会话空闲了一个多小时：面板要提示接着用每轮花多少。
+
+    v5 起这条提示与缓存是否过期无关 —— 失效后重读的老内容仍按缓存价计费，
+    真正花钱的是每轮重新发送的上下文。最近一次请求不受 5 小时窗口限制；
+    app 和 CLI 算出的每轮开销必须一致。"""
     r5, rw = now + 2.0 * H, now + 3 * 24 * H
     s, n = Session(root, now - 2.5 * H, "gpt-5.6-sol"), 20
     for i in range(n):
@@ -202,10 +204,29 @@ def idle_big_context(root, now):
     last = usage(n - 1, fresh=2_400, cached=140_000)     # 最后一次在约 68 分钟前
     return {"requests": 20, "five_hour": 20, "weekly": 33, "pools": [], "binding": 33,
             "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 20},
-            "cache_hint": "likely", "context": last["input_tokens"]}
+            "context": last["input_tokens"]}
 
 
-SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool,
+def cache_miss(root, now):
+    """会话中途缓存失效：上一次 12 万上下文，这次整段按新增输入重读（缓存计数归零）。
+
+    v5 起这部分按缓存价计 —— 服务端仍认这批内容，日志只是把缓存计数清零了。
+    照新增输入计的话，这一次就要多算十倍，长会话会被严重高估。
+    """
+    r5, rw = now + 4 * H, now + 6 * 24 * H
+    s, n = Session(root, now - 90 * 60, "gpt-5.6-sol"), 10
+    for i in range(n):
+        t = now - 80 * 60 + i * 300
+        use = (usage(i, fresh=120_000, cached=0) if i == 5
+               else usage(i, fresh=2_000, cached=118_000))
+        s.tokens(t, use, {"primary": window(300, ramp(2, 9, i, n), r5),
+                          "secondary": window(10080, ramp(10, 11, i, n), rw)})
+    s.close()
+    return {"requests": 10, "five_hour": 9, "weekly": 11, "pools": [], "binding": 11,
+            "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 10}}
+
+
+SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool, cache_miss,
                                      other_limit, idle_big_context)}
 
 

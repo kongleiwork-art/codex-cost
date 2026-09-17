@@ -12,6 +12,8 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN_5H, WIN_WEEK = 300, 10080
+# 判定缓存失效：上一次请求的上下文至少这么大，这次却有一半以上按新增输入计
+MISS_CONTEXT = 30_000
 # 受控实验和 Luna 判定开在这些目录里；它们已经在拟合数据里，不算真实使用
 SANDBOX_MARKERS = ("quota-probe", "codex-cost-judge", "research/sandbox")
 FREE = {"gpt-5.6-luna"}
@@ -119,6 +121,13 @@ def load(home=None):
                         output=(u.get("output_tokens") or 0) + (u.get("reasoning_output_tokens") or 0),
                         kind=None, session=None, reading=_reading(p.get("rate_limits"))))
         s = s or Session(os.path.basename(f), "normal")
+        # 缓存失效后重读的老内容按缓存计价（与 app、CLI 同一条规则，见 Sources/Budget.swift）
+        last_ctx = 0
+        for r in pending:
+            ctx = r.fresh + r.cached
+            if last_ctx >= MISS_CONTEXT and ctx and r.fresh >= 0.5 * ctx:
+                r.cached, r.fresh = r.cached + r.fresh, 0
+            last_ctx = ctx
         for r in pending:
             r.model = r.model or first_model or "?"
             r.kind, r.session = s.kind, s.sid

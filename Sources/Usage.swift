@@ -125,6 +125,7 @@ enum Usage {
     static func parseCodex(_ url: URL, days: DayFormatter) -> [Record] {
         var model = "?"
         var firstModel: String?
+        var lastContext = 0
         var out: [Record] = []
         eachLine(url, markers: ["\"turn_context\"", "\"token_count\""]) { obj in
             let p = obj["payload"] as? [String: Any] ?? [:]
@@ -140,8 +141,15 @@ enum Usage {
                   !u.isEmpty, let day = days.day(ts) else { return }
             let inp = int(u["input_tokens"]), cached = int(u["cached_input_tokens"])
             let o = int(u["output_tokens"]), r = int(u["reasoning_output_tokens"])
+            // 缓存失效后重读的老内容按缓存计价，规则见 Budget.swift
+            var fresh = max(0, inp - cached), read = cached
+            if lastContext >= Budget.missContext, inp > 0, fresh >= inp / 2 {
+                read += fresh
+                fresh = 0
+            }
+            lastContext = inp
             out.append(Record(key: "cx|\(ts)|\(inp)|\(cached)|\(o)|\(r)", day: day, tool: .codex,
-                              model: model, input: max(0, inp - cached), cacheRead: cached,
+                              model: model, input: fresh, cacheRead: read,
                               cacheWrite: 0, output: o + r, cost: nil))
         }
         if let firstModel {

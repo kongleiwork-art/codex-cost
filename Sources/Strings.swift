@@ -76,17 +76,14 @@ enum L {
         s("换成 \(to) 可省约 \(Int(save))%", "Switching to \(to) would save about \(Int(save))%")
     }
 
-    // 缓存失效提示
+    // 会话开销提示
     static func lastRequestIdle(_ t: String, _ ctx: String) -> String {
         s("上次请求在 \(t)前 · 上下文 \(ctx) tok", "Last request \(t) ago · \(ctx) tokens of context")
     }
-    static func cacheResume(likely: Bool, miss: Double, hit: Double) -> String {
-        let m = String(format: "%.1f", miss), h = String(format: "%.1f", hit)
-        return likely
-            ? s("缓存大概率已失效，接着这段会话约花 \(m)%（缓存还在只要 \(h)%）",
-                "Cache has most likely expired: resuming costs about \(m)% (\(h)% if still warm)")
-            : s("缓存可能已失效，接着这段会话约花 \(m)%（缓存还在只要 \(h)%）",
-                "Cache may have expired: resuming costs about \(m)% (\(h)% if still warm)")
+    static func resumeCost(_ pct: Double) -> String {
+        let p = String(format: "%.1f", pct)
+        return s("接着这段会话每轮约 \(p)% 额度 —— 花的是上下文大小，与缓存过期无关",
+                 "About \(p)% per turn if you continue — you pay for context size, not cache age")
     }
 
     // 历史用量

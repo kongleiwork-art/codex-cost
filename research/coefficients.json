@@ -1,13 +1,45 @@
 {
-  "version": "v4",
-  "updated": "2026-09-15",
-  "about": "每 1% 的 5 小时额度能买多少 token，以及每次请求的固定成本（%）。唯一来源：改完运行 python3 research/sync_coefficients.py，它会生成 Sources/Coefficients.swift 并更新两份 README 的系数表；refit.py 和 cli/codex_budget.py 直接读这个文件。",
+  "version": "v5",
+  "updated": "2026-09-17",
+  "about": "每 1% 的 5 小时额度能买多少 token，以及每次请求的固定成本（%）。唯一来源：改完运行 python3 research/sync_coefficients.py，它会生成 Sources/Coefficients.swift 并更新两份 README 的系数表；refit.py 和 cli/codex_budget.py 直接读这个文件。v5 起：缓存失效后重读的上下文按缓存价计，规则见 Sources/Budget.swift 顶部注释。",
   "fallback": "gpt-5.6-sol",
   "models": {
-    "gpt-5.6-sol":   {"fresh": 42500, "cached": 492537, "output": 13572, "request": 0.0328, "counterfactual": true},
-    "gpt-5.5":       {"fresh": 49419, "cached": 572717, "output": 15782, "request": 0.0282, "counterfactual": false},
-    "gpt-5.6-terra": {"fresh": 47223, "cached": 547263, "output": 15080, "request": 0.0295, "counterfactual": true},
-    "gpt-5.6-luna":  {"free": true, "counterfactual": true},
-    "gpt-6-astra":   {"fresh": 35094, "cached": 250428, "output": 2318, "request": 0.5632, "counterfactual": true}
+    "gpt-5.6-sol": {
+      "fresh": 35646,
+      "cached": 364295,
+      "output": 13859,
+      "request": 0.0,
+      "counterfactual": true,
+      "source": "实验联合拟合，164 个回归点，RMS 0.39（噪声下限 0.29）"
+    },
+    "gpt-5.5": {
+      "fresh": 35646,
+      "cached": 364295,
+      "output": 13859,
+      "request": 0.0,
+      "counterfactual": false,
+      "source": "实验只有 9 个共线回归点；126 段真实会话显示与 sol 一致（实际/预测 0.98），按 sol 计"
+    },
+    "gpt-5.6-terra": {
+      "fresh": 35646,
+      "cached": 364295,
+      "output": 13859,
+      "request": 0.0,
+      "counterfactual": true,
+      "source": "只有 7 个回归点，未直测；真实片段显示不比 sol 便宜（1.16~1.34），按 sol 计"
+    },
+    "gpt-5.6-luna": {
+      "free": true,
+      "counterfactual": true,
+      "source": "30 次调用零消耗"
+    },
+    "gpt-6-astra": {
+      "fresh": 14174,
+      "cached": 129305,
+      "output": 2364,
+      "request": 0.2239,
+      "counterfactual": true,
+      "source": "实验联合拟合，28 个回归点，RMS 0.43"
+    }
   }
 }
