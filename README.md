@@ -164,9 +164,10 @@ These numbers are only worth something if you know their error bars.
 **Reliability, by model**
 
 - **Sol is the best-measured model** — a joint fit over 164 regression points,
-  RMS 0.39 against a 0.29 rounding floor. Every large-context cell now lands
-  within one point of its prediction (table below). Real sessions still run about
-  15% above the model (7–9% in the last two months); that gap is open.
+  RMS 0.39 against a 0.29 rounding floor. Every large-context cell lands within
+  one point of its prediction (table below), and on your own logs the model comes
+  within 1% of what the quota reading actually did: 9,994 intervals in which only
+  one session was running, 4,922% observed against 4,970% predicted.
 - **Terra is indistinguishable from Sol** at this resolution. Their error bars
   overlap; treat both as ≈1×.
 - **Astra rests on 28 regression points; Luna on 30 calls.** Astra's cached rate
@@ -237,11 +238,12 @@ These numbers are only worth something if you know their error bars.
 | `req/many` — 63 small requests | 10.6% | 9.2% | 9% |
 | `cache/bigctx` | 25.4% | 24.1% | 24% |
 
-v5 lands within one point on every one of them. What it still does not explain:
-193 real-usage segments run about 15% more expensive than predicted (7–9% in the
-last two months). Fitting the coefficients on that real usage instead would put
-cached at ~304K tok/1%, but with a fit error of 6.8 against 0.39 — so the
-experiment values ship, and the gap stays an open question.
+v5 lands within one point on every one of them, and within 1% on real usage —
+once you only count quota you can attribute. Run several Codex sessions at the
+same time and the reading cannot say which of them spent what; measured over
+those stretches, usage looks about 60% more expensive than any model predicts.
+`research/intervals.py` reports the two cases separately: 0.99 when one session
+is running, 1.63 when several are.
 
 Version 3 came out of a second, independent pass over the data
 ([#1](https://github.com/kongleiwork-art/codex-cost/pull/1)). That pass ran on the
