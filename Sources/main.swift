@@ -384,14 +384,20 @@ struct Collapsed: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .padding(.leading, 11)
             Spacer(minLength: notchWidth)
             HStack(spacing: 7) {
+                // 百分比不许换行也不许被压缩：宽度不够时宁可截断左边的模型名。
+                // 之前没定死，模型名一出现（「5.6-sol」比占位的「-」长）就把它挤成两行，
+                // 显示成「29.0」换行「%」。
                 Text(String(format: "%.1f%%", used))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(1)
+                    .fixedSize()
                 Ring(value: used)
             }
             .padding(.trailing, 10)
@@ -872,8 +878,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: Store!
     var collapsedSize: NSSize {
         let n = Notch(screen: window?.screen ?? NSScreen.main ?? NSScreen.screens[0])
-        // 比刘海两侧各宽 62pt，看起来就是刘海变宽了；高度与刘海齐平
-        return NSSize(width: (n.width > 0 ? n.width : 180) + 124, height: n.height)
+        // 比刘海两侧各宽 78pt，看起来就是刘海变宽了；高度与刘海齐平。
+        // 62pt 不够：一侧要放「5.6-terra」这样的模型名，另一侧要放「100.0%」和圆环，
+        // 两边加起来约 151pt，挤不下时 SwiftUI 会把百分比折成两行。
+        return NSSize(width: (n.width > 0 ? n.width : 180) + 156, height: n.height)
     }
     var expandedSize: NSSize {
         NSSize(width: Expanded.width,
@@ -1011,6 +1019,19 @@ enum Launcher {
             Renderer.history(to: args[i + 1], period: period)
         }
         if CommandLine.arguments.contains("--dump") {
+            // --recompute N：同一个进程里先算 N-1 次再输出，用来测增量解析那条路
+            // （第二次起只解析新增的字节，见 Budget.FileState）。每算完一次往
+            // stderr 写一行、再等 stdin 的一行 —— 测试就能在两次之间往日志里追加
+            // 内容，不用靠 sleep 赌时序。没接管道时 readLine 直接读到 EOF，不会卡住。
+            if let i = CommandLine.arguments.firstIndex(of: "--recompute"),
+               i + 1 < CommandLine.arguments.count,
+               let n = Int(CommandLine.arguments[i + 1]), n > 1 {
+                for _ in 1..<n {
+                    _ = Budget.compute()
+                    FileHandle.standardError.write("recomputed\n".data(using: .utf8)!)
+                    _ = readLine()
+                }
+            }
             let r = Budget.compute()
             // --dump --json：机器可读，回归测试拿它和 CLI 的 --json 对账
             if CommandLine.arguments.contains("--json") {
