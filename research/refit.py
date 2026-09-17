@@ -499,8 +499,58 @@ def section_ctx(inc, model="gpt-5.6-sol"):
                     else f"最大偏离是量化误差的 {worst:.1f} 倍 —— 不像直线"))
 
 
+def section_recheck(inc, model="gpt-5.6-sol"):
+    """【7】大上下文组反解缓存费率。
+
+    从实测的额度涨幅里扣掉新增输入、输出和每请求的部分，剩下的都是缓存花的，
+    再除以缓存 token 数就是「每 1% 能买多少缓存 token」。读数是整数，所以 Δ 有
+    ±1 的量化误差，这里一并给出区间 —— 区间越窄的组越可信。
+
+    同一天同一个窗口里跑的 recheck/* 是专门为此设计的（路线图 2.3）；
+    历史上的 cache/bigctx、ctx/* 一起列出来对照。
+    """
+    F, C, O, R = SHIPPED[model]
+    cells = ("recheck/bigctx", "recheck/ctx200k", "cache/bigctx", "ctx/200k", "ctx/120k")
+    rows = []
+    for cell in cells:
+        xs = sorted((x for x in inc if x["cell"] == cell and x["model"] == model),
+                    key=lambda x: x["t"])
+        if len(xs) < 6:
+            continue
+        if any(b["p"] < a["p"] for a, b in zip(xs, xs[1:])):
+            rows.append((cell, len(xs), None, None, None, "读数中途回落，跳过"))
+            continue
+        billed = xs[:-1]
+        n = len(billed)
+        f = sum(x["f"] for x in billed)
+        c = sum(x["c"] for x in billed)
+        o = sum(x["o"] for x in billed)
+        dp = xs[-1]["p"] - xs[0]["p"]
+        rest = f / F + o / O + R * n
+        def solve(delta):
+            left = delta - rest
+            return c / left if left > 0 else None
+        rows.append((cell, n, c, dp, solve(dp), (solve(dp + 1), solve(dp - 1))))
+    print("\n【7】大上下文组反解缓存费率（每 1% 能买多少缓存 token）")
+    if not rows:
+        print("    还没有可用的大上下文组")
+        return
+    print(f"    {'组':<16}{'请求':>4}{'缓存 token':>13}{'实测Δ':>7}{'扣非缓存后':>11}"
+          f"{'缓存费率':>11}   量化误差区间")
+    for cell, n, c, dp, est, span in rows:
+        if c is None:
+            print(f"    {cell:<16}{n:>4}   {span}")
+            continue
+        f_rest = dp - (c / est if est else 0)
+        lo, hi = (span if isinstance(span, tuple) else (None, None))
+        rng = (f"{lo:,.0f} ~ {hi:,.0f}" if lo and hi else "—")
+        print(f"    {cell:<16}{n:>4}{c:>13,}{dp:>7.0f}{dp - (c / est if est else 0):>11.1f}"
+              f"{(est or 0):>11,.0f}   {rng}")
+    print(f"    仓库当前系数 {C:,} tok/1%；真实使用片段（validate_real.py）约 388,000")
+
+
 def section_gaps(rows):
-    print("\n【7】数据覆盖")
+    print("\n【8】数据覆盖")
     cells = collections.Counter(r["cell"] for r in rows
                                 if r.get("ok") and r.get("phase", "measure") == "measure")
     for cell, note in (("cache/bigctx", "定缓存费率"),
@@ -541,6 +591,7 @@ def main():
             section_regime(inc, A, y)
     section_pairs(inc)
     section_ctx(inc)
+    section_recheck(inc)
     section_gaps(rows)
     print()
     return 0
