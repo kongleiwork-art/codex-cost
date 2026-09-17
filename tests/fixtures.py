@@ -205,7 +205,26 @@ def idle_big_context(root, now):
             "cache_hint": "likely", "context": last["input_tokens"]}
 
 
-SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool,
+def cache_miss(root, now):
+    """会话中途缓存失效：上一次 12 万上下文，这次整段按新增输入重读（缓存计数归零）。
+
+    v5 起这部分按缓存价计 —— 服务端仍认这批内容，日志只是把缓存计数清零了。
+    照新增输入计的话，这一次就要多算十倍，长会话会被严重高估。
+    """
+    r5, rw = now + 4 * H, now + 6 * 24 * H
+    s, n = Session(root, now - 90 * 60, "gpt-5.6-sol"), 10
+    for i in range(n):
+        t = now - 80 * 60 + i * 300
+        use = (usage(i, fresh=120_000, cached=0) if i == 5
+               else usage(i, fresh=2_000, cached=118_000))
+        s.tokens(t, use, {"primary": window(300, ramp(2, 9, i, n), r5),
+                          "secondary": window(10080, ramp(10, 11, i, n), rw)})
+    s.close()
+    return {"requests": 10, "five_hour": 9, "weekly": 11, "pools": [], "binding": 11,
+            "current_model": "gpt-5.6-sol", "models": {"gpt-5.6-sol": 10}}
+
+
+SCENARIOS = {f.__name__: f for f in (normal, reserve, weekly_only, stale, expired_pool, cache_miss,
                                      other_limit, idle_big_context)}
 
 

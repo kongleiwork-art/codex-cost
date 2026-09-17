@@ -143,10 +143,10 @@ Each model gets four coefficients instead of one multiplier:
 
 | Model | New input per 1% | Cached input per 1% | Output + reasoning per 1% | Per request |
 |---|---:|---:|---:|---:|
-| `gpt-5.6-sol` | 42,500 tok | 492,537 tok | 13,572 tok | 0.0328% |
-| `gpt-5.6-terra` | 47,223 tok | 547,263 tok | 15,080 tok | 0.0295% |
+| `gpt-5.6-sol` | 35,646 tok | 364,295 tok | 13,859 tok | 0.0000% |
+| `gpt-5.6-terra` | 35,646 tok | 364,295 tok | 13,859 tok | 0.0000% |
 | `gpt-5.6-luna` | free | free | free | free |
-| `gpt-6-astra` | 35,094 tok\* | 250,428 tok | 2,318 tok | 0.5632%\* |
+| `gpt-6-astra` | 14,174 tok\* | 129,305 tok | 2,364 tok | 0.2239%\* |
 
 Sol's four are fitted jointly on every Sol measurement with non-negative
 least squares ([`research/refit.py`](research/refit.py)). Terra is

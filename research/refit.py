@@ -73,6 +73,10 @@ def pct5h(r):
     return w.get("used_percent")
 
 
+# 判定缓存失效：上一次的上下文至少这么大，这次却有一半以上按新增输入计费
+MISS_CONTEXT = 30_000
+
+
 def increments(rows):
     """还原每次请求的真实增量。
 
@@ -96,6 +100,7 @@ def increments(rows):
     for rs in by_sess.values():
         rs.sort(key=lambda r: (r.get("events") or 0, r.get("trial") or 0))
         prev = (0, 0, 0)
+        prev_ctx = 0
         warmed = False
         for r in rs:
             t = r["tokens"]
@@ -104,6 +109,13 @@ def increments(rows):
                    t["output_tokens"] + t["reasoning_output_tokens"])
             d = tuple(max(0, cum[k] - prev[k]) for k in range(3)) if len(rs) > 1 else cum
             prev = cum
+            # 缓存失效后重读的老内容，服务端仍按缓存价计费，日志却把它算成新增输入。
+            # 不改判时：带失效的组反解出缓存约 55 万 tok/1%，不带失效的只有 37 万，
+            # 联合拟合被迫折中（RMS 1.02）。改判后各组收敛到 35~39 万，RMS 0.52。
+            ctx = d[0] + d[1]
+            if prev_ctx >= MISS_CONTEXT and ctx and d[0] >= 0.5 * ctx:
+                d = (0, d[0] + d[1], d[2])
+            prev_ctx = ctx
             if r.get("phase", "measure") != "measure":
                 warmed = True
                 continue

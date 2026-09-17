@@ -56,6 +56,10 @@ def _load_coef():
 COEF, DEFAULT_COEF, COUNTERFACTUAL = _load_coef()   # COUNTERFACTUAL：参加「全用一个模型」对照的模型
 UNCERTAIN = {"gpt-6-astra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.6-terra"}
 
+# 判定缓存失效：上一次请求的上下文至少这么大，这次却有一半以上按新增输入计
+MISS_CONTEXT = 30_000
+
+
 def cost_pct(fresh, outside, requests, model, cached=0):
     f, ca, o, r = COEF.get(model, DEFAULT_COEF)
     if f is None:
@@ -77,6 +81,7 @@ def parse(path):
            "fresh": 0, "cached": 0, "output": 0, "reasoning": 0,
            "requests": 0, "first": None, "last": None, "quota": {}, "quota_ts": "",
            "events": [], "readings": []}
+    last_context = 0
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -132,10 +137,15 @@ def parse(path):
                 continue
             inp = u.get("input_tokens", 0) or 0
             cch = u.get("cached_input_tokens", 0) or 0
+            # 缓存失效后重读的老内容按缓存计价，规则见 Sources/Budget.swift
+            fresh, cached = max(0, inp - cch), cch
+            if last_context >= MISS_CONTEXT and inp > 0 and fresh >= inp / 2:
+                cached, fresh = cached + fresh, 0
+            last_context = inp
             out["events"].append({
                 "ts": ts,
-                "fresh": max(0, inp - cch),
-                "cached": cch,
+                "fresh": fresh,
+                "cached": cached,
                 "output": u.get("output_tokens", 0) or 0,
                 "reasoning": u.get("reasoning_output_tokens", 0) or 0,
                 "model": out["model"],

@@ -21,19 +21,24 @@ enum Budget {
     //   luna  —— 30 次调用零消耗
     // 缓存输入约比 fresh 便宜 12 倍。
     //
-    // 系数经历了四版：
+    // 计费规则：缓存失效后重读的老内容，服务端仍按缓存价计费，日志却把它记成
+    // 新增输入（缓存计数归零）。判据是「上一次上下文 ≥3 万、这次一半以上按新增算」。
+    // 不改判的话，带失效的长会话会被高估好几倍。
+    //
+    // 系数经历了五版：
     //   ① 「缓存免费」：分析 bug，续会话记累计 token 却被当增量求和，缓存虚增约 7 倍
     //   ② 677,444：拿 cache/bigctx 单组做残差，其余系数沿用缓存按零时拟合的旧值，重复计费
     //   ③ 481 条联合拟合：fresh 66,457、每请求 0.0819%。旧实验每次请求都顺带几千到两万
     //      fresh，两者同涨同落拆不开，大半 fresh 成本被记到了「每请求」上
-    //   ④ 现在这版：补上 req/*（缓存总量相同、请求数差 4 倍）和 ctx/*（请求数固定、只扫
-    //      上下文规模）后重拟合，按「读数滞后一次」对齐。req 成对比较直接解出每请求约 0，
-    //      ctx 四组落在一条直线上 —— 缓存成本与上下文大小成正比。
+    //   ④ 补上 req/* 和 ctx/* 后重拟合，按「读数滞后一次」对齐；每请求降到 0.0328%
+    //   ⑤ 现在这版：发现上面那条计费规则。改判前，带缓存失效的实验组反解出缓存约 55 万
+    //      tok/1%、不带失效的只有 37 万，联合拟合被迫折中（RMS 1.02）；改判后五组收敛到
+    //      35~39 万，RMS 0.39（1% 量化噪声下限 0.29），每请求实测为 0。
+    //      对照组两次（09-09、09-17）每次都是 0.211%，计费口径没变。
     //
-    // 仍未对上：真实 148 次长会话预测 88%，实测 82%（③ 是 81.9%）。分段验证 MAE 1.13
-    // （③ 0.99），但平均偏差 +0.31（③ +0.61）、最大误差 −2.1（③ +3.9）。
-    // astra 只有 4 段数据：缓存费率逐段删除仍在 25~30 万，但 fresh 与每请求此消彼长
-    // （fresh 从 2.5 万到 8 万拟合误差几乎一样），留一交叉验证 1.67。
+    // 仍未对上：193 段真实使用片段仍比预测贵，相对误差中位数 −15%（近两月 −7%~−9%）。
+    // 用真实数据直接回归会给出更贵的缓存（约 30 万 tok/1%），但误差大得多（RMS 6.8 对 0.39），
+    // 且只基于一个账号，所以没有采用。缺口的候选解释是桌面版的后台请求。
     struct Coef {
         let fresh: Double?      // 每 1% 额度能买多少 fresh 输入 token；nil = 不计费
         let cached: Double?     // 每 1% 能买多少缓存输入 token
@@ -220,6 +225,9 @@ enum Budget {
     /// 一条额度读数：来自某个 token_count 事件的 rate_limits
     fileprivate struct Reading { let ts: Date; let model: String; let windows: [Double: Window] }
     /// 一次真实请求的用量，附带它自己那条 rate_limits 属于哪个额度池
+    /// 判定缓存失效：上一次请求的上下文至少这么大，这次却有一半以上按新增输入计
+    static let missContext = 30_000
+
     fileprivate struct UsageEvent {
         let ts: Date; let model: String
         let fresh: Int; let cached: Int; let output: Int
@@ -232,6 +240,7 @@ enum Budget {
                             latest: inout LastRequest?) -> Bool {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return false }
         var model: String? = nil
+        var lastContext = 0
         var touched = false
 
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
@@ -294,9 +303,19 @@ enum Budget {
                 if latest == nil || ts > latest!.ts {
                     latest = LastRequest(ts: ts, model: model ?? "?", context: inp)
                 }
+                let prevContext = lastContext
+                lastContext = inp
                 guard ts >= since else { continue }
+                // 缓存失效后重读的老内容，服务端仍按缓存价计费，日志却把它记成新增输入
+                // （缓存计数清零）。不改判的话，带失效的长会话会被高估好几倍：各实验组
+                // 反解的缓存费率原本从 37 万到 57 万各说各话，改判后收敛到 35~39 万。
+                var fresh = max(0, inp - cch), cached = cch
+                if prevContext >= missContext, inp > 0, fresh >= inp / 2 {
+                    cached += fresh
+                    fresh = 0
+                }
                 events.append(UsageEvent(ts: ts, model: model ?? "?",
-                                         fresh: max(0, inp - cch), cached: cch, output: outp,
+                                         fresh: fresh, cached: cached, output: outp,
                                          has5h: got[windowMinutes5h] != nil,
                                          weeklyReset: got[windowMinutesWeek]?.resetsAt))
                 touched = true
