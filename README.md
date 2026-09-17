@@ -23,8 +23,8 @@ two questions that actually change what you do next:
 - **What is that spend made of** — new input, output, or the per-request floor?
 - **What would the same work have cost on a different model?**
 
-The second one needs a cost model. Getting one took **655 controlled API calls
-across 33 experiment cells**, changing one variable at a time. The raw trials and
+The second one needs a cost model. Getting one took **758 controlled API calls
+across 35 experiment cells**, changing one variable at a time. The raw trials and
 the harness are in [`research/`](research/).
 
 ## Install
@@ -97,33 +97,31 @@ Claude Code's 30-day transcript cleanup. Nothing is uploaded.
 
 ## What the measurements showed
 
-**Cached input is cheap, not free — roughly 12× cheaper than fresh.** One percent
-of the five-hour window buys ~42K fresh input tokens or ~490K cached ones, and the
+**Cached input is cheap, not free — roughly 10× cheaper than fresh.** One percent
+of the five-hour window buys ~36K fresh input tokens or ~364K cached ones, and the
 cached cost grows in straight proportion to context size (20 requests each at
-20K, 60K, 120K and 200K of context all land on one line). That is why long
-sessions still add up: one real session carrying ~150K of context across 148
-turns spent about half of its quota on cached input alone. *Still don't clear
-context to save quota* — rebuilding it costs full fresh price, about 12× worse.
-But a very long session is not free either.
+20K, 60K, 120K and 200K of context all land on one line). What you pay for, turn
+after turn, is the context you keep re-sending.
 
-**Idle time is what expires the cache.** In this account's own sessions, a
-request sent within a minute of the previous one found its cache gone less than 1%
-of the time; after 10–30 idle minutes, more than a quarter of the time; after an
-hour, 9 times in 10. A miss re-bills the whole context as new input — on
-a 150K-token Sol session that is about 3.5% of the five-hour window instead of
-0.3%. Over 30 days, cache misses took about 11% of this account's quota, so the
-panel now warns you when you come back to a large session.
+**An expired cache costs nothing extra.** When the provider drops a conversation
+from its cache, the next request reports the whole context as new input — but the
+quota does not move any faster. A 39-request cell containing two such re-reads
+moved the window 17%, which matches the 16.4% you get by pricing every request as
+cached; pricing those two as fresh predicts 24%. codex-cost therefore bills a
+re-read as cached, and the panel tells you what one more turn in this session
+costs instead of warning about cache age. The re-reads themselves are easy to
+see in the logs: idle for an hour and nine times in ten the next request reports
+the whole context as new.
 
-**Changing reasoning effort mid-session resets the cache too.** Of the misses
-that came within five minutes of the previous request, nearly half followed an
-effort change. Settle the effort at the start of a long session, not halfway through.
+**Changing reasoning effort mid-session drops the cache.** Nearly half of the
+re-reads that happen within five minutes of the previous request follow an effort
+change. By the rule above it costs no extra quota — only latency.
 
-**The per-request floor is small — what you pay for is what each request
-carries.** ~0.03% on Sol, so about 30 near-empty requests make 1% of the
-five-hour window. An earlier version of this README said 0.08%: older
-experiments sent thousands of fresh tokens with every request, so the two could
-not be told apart. Two cells built to separate them — same cached total, 4×
-different request counts — put the floor near zero. A tool loop is cheap if it
+**There is no measurable per-request floor on Sol.** `req/many` and `req/few` —
+same cached total, 4× different request counts — solve it directly at
+−0.012% ± 0.042%, and the joint fit puts it at zero. Earlier versions of this
+README said 0.08%, then 0.03%: older cells sent thousands of fresh tokens with
+every request, so the two could not be told apart. A tool loop is cheap if it
 re-sends little; it is expensive when every turn drags a large context along.
 
 **Effort is not charged at a premium — on Sol.** Higher effort costs more only
@@ -132,8 +130,8 @@ at 1.0 ± 0.1. In practice Sol at max effort still undercuts Astra at low effort
 so **turn the effort dial up before reaching for a bigger model.**
 
 **Astra needs more than one number.** Relative to Sol its cached input costs
-~2× and its output ~6×, while its per-request floor is an order of magnitude
-higher, so any single "Astra is N×" figure shifts with how much the model talks.
+~2.8× and its output ~5.9×, and unlike Sol it has a real per-request floor
+(0.22%), so any single "Astra is N×" figure shifts with how much the model talks.
 A few substantial Astra requests are affordable; long reasoning chains and
 chatty tool loops on it are not.
 
@@ -165,15 +163,15 @@ These numbers are only worth something if you know their error bars.
 
 **Reliability, by model**
 
-- **Sol is the best-measured model, but not settled** — a joint fit over 140
-  regression points, RMS 0.84 against a 0.29 rounding floor, leave-one-out 0.87.
-  The fit error sits well above the floor, and one real 148-request session is
-  over-predicted (88% vs. 82%). The table below shows where each version lands.
+- **Sol is the best-measured model** — a joint fit over 164 regression points,
+  RMS 0.39 against a 0.29 rounding floor. Every large-context cell now lands
+  within one point of its prediction (table below). Real sessions still run about
+  15% above the model (7–9% in the last two months); that gap is open.
 - **Terra is indistinguishable from Sol** at this resolution. Their error bars
   overlap; treat both as ≈1×.
-- **Astra rests on four segments (~100 calls); Luna on 30.** Astra's cached and
-  output rates hold up when any one segment is dropped; its fresh-vs-per-request
-  split does not. Read Luna, and that part of Astra, as order-of-magnitude.
+- **Astra rests on 28 regression points; Luna on 30 calls.** Astra's cached rate
+  is now measured rather than extrapolated, but its fresh-vs-per-request split is
+  still soft. Read Luna, and that part of Astra, as order-of-magnitude.
 
 **Known limits of the method**
 
@@ -202,7 +200,7 @@ These numbers are only worth something if you know their error bars.
   not yet include that request's own cost; the next one does. Aligning the fit
   that way lowers its error for both Sol and Astra.
 
-**How the coefficients got here — four versions**
+**How the coefficients got here — five versions**
 
 1. **"Cached input is free."** Wrong, and wrong in the analysis rather than the
    data: resumed-session cells record *cumulative* token counts, and the analysis
@@ -217,28 +215,33 @@ These numbers are only worth something if you know their error bars.
    trials. Across 24 cells: MAE 0.87% → 0.66%, mean bias +0.85% → +0.32%. But
    its per-request floor (0.0819%) was inflated: in those trials fresh input and
    request count rose together, so the fit could trade one for the other.
-4. **Current.** Two new cell families broke that tie. `req/many` and `req/few`
-   hold the cached total equal while request counts differ 4×; the difference
-   alone solves the floor at −0.012% ± 0.042%. `ctx/*` fix 20 requests and sweep
-   context from 20K to 200K; all four sit within rounding of one straight line.
-   Refitting everything, aligned to the one-request lag in quota readings, gives
-   the table above.
+4. **492,537 tok/1%.** Two new cell families broke that tie. `req/many` and
+   `req/few` hold the cached total equal while request counts differ 4×; the
+   difference alone solves the floor at −0.012% ± 0.042%. `ctx/*` fix 20 requests
+   and sweep context from 20K to 200K; all four sit within rounding of one
+   straight line. But cells that had suffered a cache miss still solved to ~550K
+   while clean cells solved to ~370K.
+5. **Current.** Two cells run back to back in one window reproduced that split
+   exactly (15K-context cell 572K, 200K-context cell 370K), which ruled out a
+   metering change. The difference is the re-read: subtracting it at the fresh
+   price took too much off. Billing a re-read as cached collapses every cell onto
+   the same rate and drops the fit error from 1.02 to 0.39, with the per-request
+   floor at zero. A control cell run on 09-09 and again on 09-17 cost 0.211% per
+   request both times, so metering itself has not moved.
 
-|  | v3 | v4 (current) | observed |
+|  | v4 | v5 (current) | observed |
 |---|---:|---:|---:|
-| `req/many` — 63 small requests | 12.7% | 10.6% | 9% |
-| `req/few` — 15 large requests | 7.2% | 6.7% | 8% |
-| `ctx/20k` | 2.5% | 1.7% | 1% |
-| `ctx/200k` | 9.1% | 8.5% | 11% |
-| `cache/bigctx` | 24.7% | 25.4% | 24% |
-| a real 148-request session | 81.9% | 88.0% | 82% |
+| `recheck/bigctx` — 39 requests, 2 re-reads | 18.6% | 16.7% | 17% |
+| `recheck/ctx200k` — 19 requests at 200K | 8.5% | 10.6% | 11% |
+| `ctx/200k` | 8.5% | 10.6% | 11% |
+| `req/many` — 63 small requests | 10.6% | 9.2% | 9% |
+| `cache/bigctx` | 25.4% | 24.1% | 24% |
 
-Neither version wins everywhere. v4 fixes the cells designed to separate the
-floor from fresh input and halves the mean bias (+0.61 → +0.31 across 11
-segments), but its segment MAE is slightly worse (0.99 → 1.13) and it misses the
-real session by 6 points. Large contexts are under-predicted by both —
-`ctx/200k` suggests cached input may cost more than the joint fit says, which the
-older `cache/bigctx` cell does not show. That is the open question.
+v5 lands within one point on every one of them. What it still does not explain:
+193 real-usage segments run about 15% more expensive than predicted (7–9% in the
+last two months). Fitting the coefficients on that real usage instead would put
+cached at ~304K tok/1%, but with a fit error of 6.8 against 0.39 — so the
+experiment values ship, and the gap stays an open question.
 
 Version 3 came out of a second, independent pass over the data
 ([#1](https://github.com/kongleiwork-art/codex-cost/pull/1)). That pass ran on the
