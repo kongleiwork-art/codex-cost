@@ -73,6 +73,16 @@ python3 cli/codex_route.py --task "..." --no-luna   # 只跑本地规则
 
 钩子改不了这一轮的模型 —— Codex 0.155 的协议不允许，主会话的模型只有界面能换。所以它只能提醒你按一下。
 
+装和卸：
+
+```bash
+python3 cli/install_model_hint.py --dry-run    # 先看它要往 hooks.json 写什么
+python3 cli/install_model_hint.py              # 安装（写之前先备份）
+python3 cli/install_model_hint.py --uninstall  # 还原
+```
+
+只动 `~/.codex/hooks.json`，你已有的其它钩子原样保留，重复安装不会叠加。装完 Codex 会提示 **Hooks need review**，要你自己在界面里确认信任——安装脚本不替你信任。
+
 ### 历史用量
 
 「历史用量」标签页把这台 Mac 上所有有本地记录的 token 加起来，可选今天、7 天、30 天或全部，按工具和模型分项，附每日柱状图。

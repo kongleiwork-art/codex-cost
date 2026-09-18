@@ -92,6 +92,18 @@ The hook cannot change the model for that turn: Codex 0.155's protocol does not
 allow it, and the main session's model can only be switched in the UI. So the
 hook can only tell you to press the switch.
 
+To install and remove it:
+
+```bash
+python3 cli/install_model_hint.py --dry-run    # print what it would write
+python3 cli/install_model_hint.py              # install (backs up first)
+python3 cli/install_model_hint.py --uninstall  # put it back
+```
+
+It touches only `~/.codex/hooks.json`, leaves any other hooks alone, and does not
+stack on repeat installs. Codex then shows **Hooks need review** — trusting it is
+your call, and the installer never does it for you.
+
 ### Usage history
 
 The **History** tab adds up every token this Mac has a local record of — today,
