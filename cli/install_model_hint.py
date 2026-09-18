@@ -27,8 +27,13 @@ def codex_home() -> str:
 
 
 def hook_command(block: bool) -> str:
+    """包一层 `|| true`：脚本被挪走、改名、删掉时 python3 会以退出码 2 结束，
+    而 Codex 把 UserPromptSubmit 的退出码 2 当成「拦截这条消息」。真出那种事，
+    宁可这个钩子静悄悄什么都不做，也不能让你发不出消息。"""
     cmd = f"{shlex.quote(sys.executable)} {shlex.quote(HOOK)}"
-    return cmd + " --block" if block else cmd
+    if block:
+        cmd += " --block"
+    return f"/bin/sh -c {shlex.quote(cmd + ' || true')}"
 
 
 def is_ours(handler: dict) -> bool:

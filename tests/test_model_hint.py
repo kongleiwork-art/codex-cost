@@ -180,6 +180,14 @@ class Installer(unittest.TestCase):
         self.install("--block")
         self.assertIn("--block", self.ours(self.read())[0]["command"])
 
+    def test_missing_script_cannot_block_messages(self):
+        """脚本被挪走时，钩子命令必须仍以 0 退出 —— 退出码 2 会被当成拦截"""
+        self.install()
+        cmd = self.ours(self.read())[0]["command"].replace("codex_model_hint.py",
+                                                           "codex_model_hint.py.moved")
+        p = subprocess.run(cmd, shell=True, input="{}", text=True, capture_output=True, timeout=60)
+        self.assertEqual(p.returncode, 0, "脚本不在时钩子会拦住消息")
+
     def test_broken_hooks_json_is_not_overwritten(self):
         with open(self.path, "w", encoding="utf-8") as f:
             f.write("{ 这不是 json")
