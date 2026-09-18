@@ -24,3 +24,4 @@ jobs:
           python3 tests/test_router.py
           python3 tests/test_quota.py
           python3 tests/test_usage.py
+          python3 tests/test_model_hint.py
