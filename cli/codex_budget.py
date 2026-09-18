@@ -5,12 +5,13 @@
   · 这笔花费是怎么构成的（新输入 / 输出 / 每请求底价）
   · 同样这些活，换成别的模型要花多少 —— 反事实计算
 
-成本模型来自受控实验（655 次测量、33 组，research/refit.py 联合拟合）：
+成本模型来自受控实验（758 次测量、35 组，research/refit.py 联合拟合）：
 
     Δ5h% = fresh_input/F + cached_input/C + 输出侧/O + R × 请求数
 
 每个模型一组 (F, C, O, R)；「输出侧」= output + reasoning。缓存输入不是
-免费的，只是便宜：sol 上约为 fresh 的 1/12。
+免费的，只是便宜：sol 上约为 fresh 的 1/10。缓存失效后被重读的老内容仍按
+缓存价计（v5，见 Sources/Budget.swift 的 MISS_CONTEXT）。
 
 零依赖，标准库，Python 3.8+。只读本地日志，不上传任何数据。
 """
@@ -34,10 +35,11 @@ WIN_5H, WIN_WEEK = 300, 10080
 #  每 1% 的输出侧 token 数, 每次请求成本%)
 #
 # 与 Sources/Budget.swift 保持一致，来龙去脉见那边的注释。简言之：对全部 sol
-# 测量做联合非负最小二乘（research/refit.py，读数滞后一次对齐），sol 140 个回归点
-# RMS 0.84。req/* 与 ctx/* 把 fresh 和「每请求」拆开了：旧版 0.0819% 里大半其实是
-# fresh 成本。terra 与 sol 分不出来，按 0.90× 缩放（5.5 是老模型，不参加对照）；astra 的缓存费率
-# 由 astra/bigctx 定下，fresh 与每请求的拆分仍不稳。
+# 测量做联合非负最小二乘（research/refit.py，读数滞后一次对齐），sol 164 个回归点
+# RMS 0.39（噪声下限 0.29）。req/* 与 ctx/* 把 fresh 和「每请求」拆开了：旧版
+# 0.0819% 全是 fresh 成本，sol 的每请求底价实测为 0。terra 与 sol 分不出来，
+# 按 sol 取值（5.5 是老模型，不参加对照）；astra 的缓存费率由 astra/bigctx 定下，
+# fresh 与每请求的拆分仍不稳。
 # 数值只存在 research/coefficients.json（app 由它生成、refit 也读它）
 COEF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
                          "research", "coefficients.json")

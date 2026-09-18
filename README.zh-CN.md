@@ -57,7 +57,21 @@ python3 cli/codex_route.py --task "fix the flaky test" --json
 python3 cli/codex_route.py --task "..." --no-luna   # 只跑本地规则
 ```
 
-它没有接进 app。拿真实的 Codex 历史回测（[`research/backtest_routing.py`](research/backtest_routing.py)）没有省下任何额度：90% 以上的额度花在超过 100 次请求的长会话里，规则有把握的只占其中约三分之一，照着规则换模型反而略多花。更值得下手的是缓存失效，见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+它没有接进 app。拿真实的 Codex 历史回测（[`research/backtest_routing.py`](research/backtest_routing.py)）没有省下任何额度：90% 以上的额度花在超过 100 次请求的长会话里，规则有把握的只占其中约三分之一，照着规则换模型反而略多花。
+
+### 贵模型提醒钩子（实验性，需自己安装）
+
+按轮重算这个账之后，露出来的问题不是「该选哪个模型」，而是**切到贵模型之后忘了切回来**：近 30 天里 astra 的轮次推理 token 中位数是 199，sol 的是 1,445 —— 贵模型的钱没花在难题上。
+
+`cli/codex_model_hint.py` 是个 Codex `userPromptSubmit` 钩子。你在贵模型上按回车之前，它会提示这一轮大概多花多少：
+
+```
+6-astra｜上下文 8.9 万｜这一轮约 2.7%，换 5.6-sol 约 0.7%（省 2.0%，按最近 3 次请求一轮估，未计输出）
+```
+
+它**不读提示词内容、不调任何模型、默认不拦你的消息**，只看当前模型和这段会话的上下文大小；在参照模型上完全静默；出任何错都静默退出，不挡消息。差距低于 1%/轮不吭声（`CODEX_COST_HINT_MIN` 可调）。要它直接拦下消息让你先切模型，加 `--block`。
+
+钩子改不了这一轮的模型 —— Codex 0.155 的协议不允许，主会话的模型只有界面能换。所以它只能提醒你按一下。
 
 ### 历史用量
 

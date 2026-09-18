@@ -66,8 +66,31 @@ It is not wired into the app. A backtest over real Codex history
 ([`research/backtest_routing.py`](research/backtest_routing.py)) found nothing to
 save: over 90% of quota went to sessions longer than 100 requests, the rules were
 confident about only about a third of that spend, and following them would have
-cost slightly more. Cache misses turned out to be the bigger lever — see
-[docs/ROADMAP.md](docs/ROADMAP.md).
+cost slightly more.
+
+### Expensive-model nudge (experimental, install it yourself)
+
+Recomputing that spend per turn showed the real problem is not *which* model to
+pick — it is switching to the expensive one and forgetting to switch back. Over
+30 days, astra turns reasoned a median of 199 tokens against sol's 1,445: the
+expensive model was not being spent on the hard questions.
+
+`cli/codex_model_hint.py` is a Codex `userPromptSubmit` hook. Before you send a
+turn on an expensive model, it tells you what that turn is about to cost:
+
+```
+6-astra｜上下文 8.9 万｜这一轮约 2.7%，换 5.6-sol 约 0.7%（省 2.0%，按最近 3 次请求一轮估，未计输出）
+```
+
+It **never reads your prompt, calls no model, and does not block your message by
+default** — it looks only at the current model and the session's context size. On
+the reference model it stays silent, and any error exits quietly rather than
+holding up your message. Gaps under 1% per turn say nothing (`CODEX_COST_HINT_MIN`
+tunes that). Pass `--block` if you would rather be stopped until you switch.
+
+The hook cannot change the model for that turn: Codex 0.155's protocol does not
+allow it, and the main session's model can only be switched in the UI. So the
+hook can only tell you to press the switch.
 
 ### Usage history
 
