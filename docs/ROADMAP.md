@@ -47,6 +47,9 @@ G1 的结论没变（额度 90% 在长会话里、本地规则净省 −1.5%）�
 - 输出 `user-prompt-submit.command.output`：`continue`、`decision`（只能是 `block`）、`reason`、`stopReason`、`suppressOutput`、`systemMessage`、`hookSpecificOutput.additionalContext`
 - **改不了这一轮的模型** —— 只能拦下消息或往上下文里塞东西。主会话模型只有界面能换，`spawn_agent` 可以给子 agent 指定模型
 - `additionalContext` 会进主会话上下文，往后每轮都跟着重发，所以提示要走 `systemMessage`，别走 `additionalContext`
+- **钩子配在哪（踩过坑）**：用户自己的钩子归 `~/.codex/config.toml` 的 `[hooks]`。`hooks.json` 也被认，但只在两处 —— 从 Claude Code 迁移配置时，以及插件自带的清单（`"hooks": "./hooks.json"`）。往 `~/.codex/hooks.json` 写，Codex 连读都不读（写完 atime 一直不变，重启桌面版也不读）
+- **装完要人工信任**才会跑：终端版启动时弹「Hooks need review」（`tui/src/startup_hooks_review.rs`），桌面版在设置里（「1 hook needs review before it can run」）。每个钩子的状态是 `enabled` + `trusted_hash`
+- **这台机器的模型清单**（`codex debug models`）：sol、terra、luna、astra、5.5、gpt-reserve、codex-auto-review，窗口都是 272K。**没有 Jev** —— 裁判那条路现在接不进 Codex
 
 ### G1 省额度回测：不过
 

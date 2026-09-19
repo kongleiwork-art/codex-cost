@@ -120,12 +120,21 @@ class Hook(unittest.TestCase):
 
 
 class Installer(unittest.TestCase):
-    """安装脚本只许动自己那条钩子，别人的原样保留，卸载要能还原。"""
+    """安装脚本只许在 config.toml 末尾加自己那一段，别的一律不动，卸载要能还原。
+
+    为什么是 config.toml：Codex 也认 hooks.json，但只在「从 Claude Code 迁移」和
+    「插件自带清单」两处读它 —— 往 ~/.codex/hooks.json 写，Codex 连读都不读。
+    """
+
+    OTHER = ('model = "gpt-5.6-sol"\n\n'
+             '[mcp_servers."x"]\ncommand = "/bin/true"\n')
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="codex-cost-install-")
         self.home = self.tmp.name
-        self.path = os.path.join(self.home, "hooks.json")
+        self.path = os.path.join(self.home, "config.toml")
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(self.OTHER)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -139,64 +148,70 @@ class Installer(unittest.TestCase):
 
     def read(self):
         with open(self.path, encoding="utf-8") as f:
-            return json.load(f)
+            return f.read()
 
-    def ours(self, data):
-        return [h for g in data.get("hooks", {}).get("UserPromptSubmit", [])
-                for h in g["hooks"] if "codex_model_hint.py" in h["command"]]
+    def command_line(self):
+        """我们那条 command=，不是配置里别人的"""
+        for line in self.read().splitlines():
+            if line.startswith("command = ") and "codex_model_hint.py" in line:
+                return line
+        return ""
+
+    def hook_command(self):
+        line = self.command_line()
+        return line[len("command = "):].strip().strip('"').replace('\\"', '"')
 
     def test_dry_run_touches_nothing(self):
         out = self.install("--dry-run")
-        self.assertFalse(os.path.exists(self.path), "--dry-run 写文件了")
+        self.assertEqual(self.read(), self.OTHER, "--dry-run 改文件了")
         self.assertIn("codex_model_hint.py", out)
+
+    def test_writes_hook_section(self):
+        self.install()
+        text = self.read()
+        self.assertIn("[[hooks.UserPromptSubmit]]", text)
+        self.assertIn("codex_model_hint.py", text)
+
+    def test_keeps_the_rest_of_the_config(self):
+        self.install()
+        text = self.read()
+        for keep in ('model = "gpt-5.6-sol"', '[mcp_servers."x"]', 'command = "/bin/true"'):
+            self.assertIn(keep, text, f"把 {keep} 弄丢了")
 
     def test_install_is_idempotent(self):
         self.install()
+        once = self.read()
         self.install()
-        self.assertEqual(len(self.ours(self.read())), 1, "重复安装叠加了")
+        self.assertEqual(self.read(), once, "重复安装叠加了")
+        self.assertEqual(once.count("[[hooks.UserPromptSubmit]]"), 1)
 
-    def test_keeps_other_hooks_and_restores(self):
-        other = {"hooks": {"UserPromptSubmit": [{"hooks": [
-            {"type": "command", "command": "/usr/bin/true"}]}],
-            "SessionStart": [{"hooks": [{"type": "command", "command": "/bin/echo hi"}]}]}}
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(other, f)
+    def test_uninstall_restores_byte_for_byte(self):
         self.install()
-        after = self.read()
-        cmds = [h["command"] for g in after["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
-        self.assertIn("/usr/bin/true", cmds, "把别人的钩子弄丢了")
-        self.assertEqual(len(self.ours(after)), 1)
         self.install("--uninstall")
-        self.assertEqual(self.read(), other, "卸载后没还原成原样")
+        self.assertEqual(self.read(), self.OTHER, "卸载后没还原成原样")
 
     def test_backup_before_write(self):
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump({"hooks": {}}, f)
         self.install()
-        self.assertTrue([n for n in os.listdir(self.home) if n.startswith("hooks.json.bak-")],
+        self.assertTrue([n for n in os.listdir(self.home) if n.startswith("config.toml.bak-")],
                         "覆盖前没备份")
 
     def test_block_flag(self):
         self.install("--block")
-        self.assertIn("--block", self.ours(self.read())[0]["command"])
+        self.assertIn("--block", self.command_line())
 
     def test_missing_script_cannot_block_messages(self):
         """脚本被挪走时，钩子命令必须仍以 0 退出 —— 退出码 2 会被当成拦截"""
         self.install()
-        cmd = self.ours(self.read())[0]["command"].replace("codex_model_hint.py",
-                                                           "codex_model_hint.py.moved")
+        cmd = self.hook_command().replace("codex_model_hint.py", "codex_model_hint.py.moved")
         p = subprocess.run(cmd, shell=True, input="{}", text=True, capture_output=True, timeout=60)
         self.assertEqual(p.returncode, 0, "脚本不在时钩子会拦住消息")
 
-    def test_broken_hooks_json_is_not_overwritten(self):
-        with open(self.path, "w", encoding="utf-8") as f:
-            f.write("{ 这不是 json")
-        p = subprocess.run([sys.executable, os.path.join(ROOT, "cli", "install_model_hint.py")],
-                           capture_output=True, text=True, timeout=60,
-                           env=dict(os.environ, CODEX_HOME=self.home))
-        self.assertNotEqual(p.returncode, 0, "坏文件也照写")
-        with open(self.path, encoding="utf-8") as f:
-            self.assertEqual(f.read(), "{ 这不是 json", "覆盖了坏文件")
+    def test_command_survives_toml_round_trip(self):
+        """命令里全是引号，写进 TOML 再读出来必须还是同一条能跑的命令"""
+        self.install()
+        p = subprocess.run(self.hook_command(), shell=True, input="不是 json", text=True,
+                           capture_output=True, timeout=60)
+        self.assertEqual(p.returncode, 0)
 
 
 if __name__ == "__main__":

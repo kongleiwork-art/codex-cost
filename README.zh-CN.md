@@ -81,7 +81,11 @@ python3 cli/install_model_hint.py              # 安装（写之前先备份）
 python3 cli/install_model_hint.py --uninstall  # 还原
 ```
 
-只动 `~/.codex/hooks.json`，你已有的其它钩子原样保留，重复安装不会叠加。装完 Codex 会提示 **Hooks need review**，要你自己在界面里确认信任——安装脚本不替你信任。
+只动 `~/.codex/config.toml`：在文件末尾加一段用注释标记包起来的 `[[hooks.UserPromptSubmit]]`，别的内容一律不动，卸载整段删掉，写之前先备份。重复安装不会叠加。
+
+（Codex 也认 `hooks.json`，但只在「从 Claude Code 迁移配置」和「插件自带清单」两处读它——往 `~/.codex/hooks.json` 写，它连读都不会读。用户自己的钩子归 `config.toml` 的 `[hooks]` 管。）
+
+装完还要你**确认信任**这个钩子才会生效：终端版启动时弹 Hooks need review，桌面版在设置里。安装脚本不替你信任。
 
 ### 历史用量
 

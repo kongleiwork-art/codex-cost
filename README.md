@@ -100,9 +100,18 @@ python3 cli/install_model_hint.py              # install (backs up first)
 python3 cli/install_model_hint.py --uninstall  # put it back
 ```
 
-It touches only `~/.codex/hooks.json`, leaves any other hooks alone, and does not
-stack on repeat installs. Codex then shows **Hooks need review** — trusting it is
-your call, and the installer never does it for you.
+It touches only `~/.codex/config.toml`, appending one comment-delimited
+`[[hooks.UserPromptSubmit]]` block, leaving everything else alone, backing the
+file up first, and removing the whole block on uninstall. Repeat installs do not
+stack.
+
+(Codex also reads `hooks.json`, but only when migrating a Claude Code setup and
+when a plugin ships one in its manifest. Writing to `~/.codex/hooks.json` gets
+you nothing — it is never read. A user's own hooks belong in `config.toml`.)
+
+Codex then asks you to **trust** the hook before it runs: the terminal client
+prompts at startup, the desktop app lists it in settings. The installer never
+trusts it for you.
 
 ### Usage history
 
