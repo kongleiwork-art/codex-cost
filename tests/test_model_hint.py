@@ -53,6 +53,31 @@ class Hook(unittest.TestCase):
                            "model": model, "permission_mode": "default", "prompt": prompt,
                            "session_id": "s", "transcript_path": path, "turn_id": "t"})
 
+    def test_counts_turns_marked_by_user_message(self):
+        """桌面版用 role=user 的 message 分界，不是 task_started。
+
+        只认 task_started 的话，几轮会被并成一轮，「每轮几次请求」估少好几倍，
+        差值算不到阈值就永远静默 —— 真机上就是这么哑掉的。
+        """
+        import importlib
+        sys.path.insert(0, os.path.join(ROOT, "cli"))
+        hint = importlib.import_module("codex_model_hint")
+        now = time.time()
+        s = fixtures.Session(self.tmp.name, now - 3600, "gpt-6-astra")
+        for t in range(4):                      # 4 轮，每轮 3 次请求
+            s.add(now - 3000 + t * 300, {"type": "message",
+                                         "payload": {"type": "message", "role": "user",
+                                                     "content": [{"type": "input_text", "text": "x"}]}})
+            for i in range(3):
+                s.tokens(now - 3000 + t * 300 + i,
+                         {"input_tokens": 120_000, "cached_input_tokens": 118_000,
+                          "output_tokens": 100, "reasoning_output_tokens": 50},
+                         {"primary": fixtures.window(300, 20, now + 7200)})
+        s.close()
+        context, per_turn = hint.session_shape(s.path)
+        self.assertEqual(per_turn, 3, "没按 role=user 的 message 分界")
+        self.assertEqual(context, 120_000)
+
     def test_expensive_model_speaks(self):
         """在 astra 上、上下文够大：提示成本差"""
         path = transcript(self.tmp.name, "gpt-6-astra", 180_000)

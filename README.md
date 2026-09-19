@@ -85,7 +85,7 @@ turn on an expensive model, it tells you what that turn is about to cost:
 It **never reads your prompt, calls no model, and does not block your message by
 default** — it looks only at the current model and the session's context size. On
 the reference model it stays silent, and any error exits quietly rather than
-holding up your message. Gaps under 1% per turn say nothing (`CODEX_COST_HINT_MIN`
+holding up your message. Gaps under 0.5% per turn say nothing (`CODEX_COST_HINT_MIN`
 tunes that). Pass `--block` if you would rather be stopped until you switch.
 
 The hook cannot change the model for that turn: Codex 0.155's protocol does not

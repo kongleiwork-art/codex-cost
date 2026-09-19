@@ -25,9 +25,10 @@ from codex_budget import COEF, DEFAULT_COEF  # noqa: E402
 # 参照模型：付费模型里最便宜的那个。提示说的「换成它能省多少」就是跟它比。
 REFERENCE = "gpt-5.6-sol"
 # 少于这个差值（每轮的 5 小时额度百分点）就不吭声 —— 提示太碎会被无视
-MIN_GAP = float(os.environ.get("CODEX_COST_HINT_MIN") or 1.0)
-# 从会话日志尾部读这么多字节就够看出当前上下文和最近几轮的规模
-TAIL_BYTES = 512 * 1024
+MIN_GAP = float(os.environ.get("CODEX_COST_HINT_MIN") or 0.5)
+# 从会话日志尾部读这么多字节。512 KB 太少：桌面版一轮能写出好几万字节，
+# 尾部只剩一两轮时「每轮几次请求」估不准（实测估成 1，实际 2~4）。
+TAIL_BYTES = 2 * 1024 * 1024
 # 估算「这一轮要发几次请求」时看最近这么多轮
 RECENT_TURNS = 8
 
@@ -47,7 +48,7 @@ def session_shape(path):
     context, turns, cur = 0, [], 0
     for line in tail_lines(path):
         if '"token_count"' not in line and '"task_started"' not in line \
-                and '"user_message"' not in line:
+                and '"user_message"' not in line and '"user"' not in line:
             continue
         try:
             d = json.loads(line)
@@ -55,7 +56,9 @@ def session_shape(path):
             continue
         p = d.get("payload") or {}
         t = p.get("type") or d.get("type")
-        if t in ("task_started", "user_message"):
+        # 一轮的开头：命令行版写 task_started，桌面版还会写一条 role=user 的 message。
+        # 只认前者的话，两轮会被并成一轮，「每轮几次请求」就估少了。
+        if t in ("task_started", "user_message") or (t == "message" and p.get("role") == "user"):
             if cur:
                 turns.append(cur)
             cur = 0
@@ -68,7 +71,10 @@ def session_shape(path):
     if cur:
         turns.append(cur)
     recent = turns[-RECENT_TURNS:]
-    return context, (int(statistics.median(recent)) if recent else 1)
+    # 取平均而不是中位：一轮只问一句、一轮跑二十次工具的情况混在一起时，
+    # 中位会被短轮次带偏，而成本是按总请求数算的
+    per_turn = max(1, int(round(statistics.mean(recent)))) if recent else 1
+    return context, per_turn
 
 
 def turn_cost(model, context, requests):
