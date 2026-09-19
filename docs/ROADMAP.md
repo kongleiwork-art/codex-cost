@@ -1,7 +1,7 @@
 # codex-cost 路线图
 
 > 以后所有任务都从这份文档出发：动手前在这里挑一项，做完回来更新状态。
-> 最后更新：2026-09-18（第 11 版：3.3 贵模型提醒钩子 —— 路由重开，但只做提醒不做判断）
+> 最后更新：2026-09-19（第 12 版：3.3 钩子已在真机装上并验证出提示）
 
 ## 一句话
 
@@ -50,6 +50,17 @@ G1 的结论没变（额度 90% 在长会话里、本地规则净省 −1.5%）�
 - **钩子配在哪（踩过坑）**：用户自己的钩子归 `~/.codex/config.toml` 的 `[hooks]`。`hooks.json` 也被认，但只在两处 —— 从 Claude Code 迁移配置时，以及插件自带的清单（`"hooks": "./hooks.json"`）。往 `~/.codex/hooks.json` 写，Codex 连读都不读（写完 atime 一直不变，重启桌面版也不读）
 - **装完要人工信任**才会跑：终端版启动时弹「Hooks need review」（`tui/src/startup_hooks_review.rs`），桌面版在设置里（「1 hook needs review before it can run」）。每个钩子的状态是 `enabled` + `trusted_hash`
 - **这台机器的模型清单**（`codex debug models`）：sol、terra、luna、astra、5.5、gpt-reserve、codex-auto-review，窗口都是 272K。**没有 Jev** —— 裁判那条路现在接不进 Codex
+
+**真机验证（09-19）**：装进 `config.toml` → 在设置「钩子 → 用户配置」里信任（Codex 随后把 `trusted_hash` 写回 config.toml）→ 在 astra 会话里发消息，界面上出现
+
+> 钩子 · UserPromptSubmit · 6-astra｜上下文 10.9 万｜这一轮约 2.1%，换 5.6-sol 约 0.6%（省 1.5%）
+
+中间踩的两个坑都已修掉，值得记住：
+
+- **装错文件**：`~/.codex/hooks.json` 写了等于没写（atime 不动）。用户自己的钩子归 `config.toml` 的 `[hooks]`
+- **哑了**：分界只认 `task_started`（桌面版每轮还写一条 `role=user` 的 message），加上尾部只读 512 KB，「每轮几次请求」估成 1，差值卡在阈值下。改成两个分界都认、尾部读 2 MB、取平均、阈值降到 0.5%
+
+**接下来看什么**：跑两周后用 `research/intervals.py` 和按轮统计复算 astra 的额度占比（现在 21.7%）和推理 token 中位数（现在 199，sol 是 1,445）。这两个数不动，说明提示被无视，那就该换 `--block` 或者干脆撤掉；动了才算这条路走通。
 
 ### G1 省额度回测：不过
 
@@ -194,7 +205,7 @@ G1 的结论没变（额度 90% 在长会话里、本地规则净省 −1.5%）�
 | G1 | 省额度回测 | 结论见「最新结论」 | M | 已做 · 不过 |
 | 3.1 | Codex 钩子验证 | — | S | 取消（G1） |
 | 3.2 | 跨工具分流 | — | L | 取消（G1） |
-| 3.3 | 贵模型提醒钩子 | `userPromptSubmit` 钩子：当前在 astra 且这一轮预计比 sol 贵超过阈值时，用 `systemMessage` 提示一句成本差，不拦消息、不读提示词内容、不调任何模型。**完成标准**：钩子在真机装上后能正确出现；sol 上完全静默；异常一律静默退出 0，不挡消息；有测试覆盖 | S | 进行中 |
+| 3.3 | 贵模型提醒钩子 | `userPromptSubmit` 钩子：当前在 astra 且这一轮预计比 sol 贵超过阈值时，用 `systemMessage` 提示一句成本差，不拦消息、不读提示词内容、不调任何模型。**完成标准**：钩子在真机装上后能正确出现；sol 上完全静默；异常一律静默退出 0，不挡消息；有测试覆盖 | S | 已做，真机验证过 |
 
 ## 暂不做
 
